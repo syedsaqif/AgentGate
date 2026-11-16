@@ -1,0 +1,32 @@
+contract_version: "1.0.0"
+display_timezone: "Asia/Kolkata"
+currency: "INR"
+
+profiles:
+  test:
+    allow_fakes: true
+    allow_dev_controls: true
+    frozen_clock: true
+  scripted:
+    allow_fakes: false
+    allow_dev_controls: true
+    frozen_clock: true
+  real:
+    allow_fakes: false
+    allow_dev_controls: false
+    frozen_clock: false
+
+risk:
+  mode: enforce
+  shadow_allowed_profiles: [test]
+
+database:
+  gateway_url: "sqlite+aiosqlite:///runtime/gateway.db"
+  bank_url: "sqlite+aiosqlite:///runtime/bank.db"
+  wal: true
+  workers: 1
+
+approval:
+  default_ttl_seconds: 300
+  scripted_ttl_seconds: 60
+  max_pending_per_mandate: 3

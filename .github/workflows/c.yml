@@ -1,0 +1,32 @@
+name: Track C scaffold
+
+on:
+  pull_request:
+    paths:
+      - "contracts/risk_*.py"
+      - "contracts/escalation_*.py"
+      - "contracts/http/c.yaml"
+      - "contracts/fixtures/c/**"
+      - "gateway/risk/**"
+      - "gateway/escalation/**"
+      - "simulator/**"
+      - "tests/c/**"
+      - "tests/support/c/**"
+      - "tools/metrics.py"
+      - ".github/workflows/c.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold-c:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m tools.dev check-contracts --owner c
+      - run: uv run pytest tests/c

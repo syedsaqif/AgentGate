@@ -1,0 +1,23 @@
+{
+  "contract_version": "1.0.0",
+  "projection": {
+    "customer_id": "cust_001",
+    "agent_id": "agt_billpal",
+    "mandate_id": "mnd_demo_1",
+    "mandate_hash": "sha256:demo-mandate-digest",
+    "action_type": "bill_pay",
+    "params": {
+      "from_account": "ACC-001",
+      "payee_id": "BILL-ELEC",
+      "amount_paise": 480000,
+      "currency": "INR",
+      "reference": "NOV-2026"
+    },
+    "intent": {
+      "task": "pay_electricity_bill",
+      "category": "utilities.electricity"
+    },
+    "idempotency_key": "bill-nov-001"
+  },
+  "expected_action_hash": "sha256:9c200f5bab04f06b91e7f2a66cf40a4b4b6e2b8cb6a8677b52d570867d2a81d8"
+}

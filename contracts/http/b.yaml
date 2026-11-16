@@ -1,0 +1,22 @@
+contract_version: "1.0.0"
+owner: B
+routes:
+  - {method: POST, path: "/v1/oauth/token", auth: registered_agent_proof}
+  - {method: POST, path: "/v1/agents/register", auth: registrar_session}
+  - {method: POST, path: "/v1/customer/login", auth: none_rate_limited}
+  - {method: POST, path: "/v1/ops/login", auth: none_rate_limited}
+  - {method: GET, path: "/v1/ops/agents", auth: ops_session}
+  - {method: POST, path: "/v1/ops/agents/{id}/suspend", auth: ops_session}
+  - {method: POST, path: "/v1/ops/agents/{id}/reinstate", auth: ops_session}
+  - {method: GET, path: "/v1/audit/entries", auth: ops_session}
+  - {method: GET, path: "/v1/audit/verify", auth: ops_session}
+  - {method: GET, path: "/v1/audit/evidence/{request_id}", auth: ops_session}
+agent_auth_profile:
+  algorithm: EdDSA
+  key_type: OKP
+  curve: Ed25519
+  token_ttl_max_seconds: 600
+  proof_time_tolerance_seconds: 60
+  proof_claims: [htm, htu, iat, jti, bsh, ath]
+  token_request_claims: [htm, htu, iat, jti, bsh]
+  body_hash: unpadded_base64url_sha256_of_exact_transmitted_bytes

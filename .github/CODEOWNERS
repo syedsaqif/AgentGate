@@ -1,0 +1,9 @@
+# GitHub usernames were not supplied at repository bootstrap.
+#
+# Do not add @MEMBER_A-style placeholders: they are not real accounts and do
+# not enforce review. Before enabling "Require review from Code Owners", use
+# docs/OWNERSHIP.md and TEAM_TASK_DISTRIBUTION (28).md section 12.2 to add the
+# four real GitHub handles and expand every listed owned path.
+#
+# Until then, ownership and unanimous contract approval are process rules in
+# CONTRIBUTING.md; this intentionally empty ruleset avoids fake enforcement.

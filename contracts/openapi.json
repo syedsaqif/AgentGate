@@ -1,0 +1,75 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AgentGate contract-only API",
+    "version": "1.0.0",
+    "description": "IC0 boundary snapshot only. It is not evidence of implemented endpoints."
+  },
+  "servers": [{"url": "http://127.0.0.1:8000"}],
+  "tags": [
+    {"name": "agent"}, {"name": "customer"}, {"name": "ops"},
+    {"name": "audit"}, {"name": "health"}, {"name": "dev"}
+  ],
+  "paths": {
+    "/v1/oauth/token": {"post": {"tags": ["agent"], "operationId": "issueAgentToken", "responses": {"200": {"description": "Key-bound token issued"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}},
+    "/v1/agents/register": {"post": {"tags": ["ops"], "operationId": "registerAgent", "security": [{"registrarSession": []}], "responses": {"201": {"description": "Agent registered"}, "400": {"$ref": "#/components/responses/BadRequest"}}}},
+    "/v1/accounts/{id}/balance": {"get": {"tags": ["agent"], "operationId": "getBalance", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "responses": {"200": {"description": "Scoped balance and audit reference"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
+    "/v1/accounts/{id}/transactions": {"get": {"tags": ["agent"], "operationId": "listTransactions", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}, {"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Scoped transaction page and audit reference"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
+    "/v1/payments/bills": {"post": {"tags": ["agent"], "operationId": "payBill", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MoneyActionRequest"}}}}, "responses": {"200": {"description": "Executed"}, "202": {"description": "Pending approval or execution outcome unknown"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}}}},
+    "/v1/transfers": {"post": {"tags": ["agent"], "operationId": "transfer", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MoneyActionRequest"}}}}, "responses": {"200": {"description": "Executed"}, "202": {"description": "Pending approval or execution outcome unknown"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}}}},
+    "/v1/actions/{request_id}": {"get": {"tags": ["agent"], "operationId": "getAction", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/RequestId"}], "responses": {"200": {"description": "Owned action status"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/v1/escalations/{id}": {"get": {"tags": ["agent"], "operationId": "getEscalation", "security": [{"agentDPoP": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "responses": {"200": {"description": "Owned escalation status"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/v1/customer/login": {"post": {"tags": ["customer"], "operationId": "customerLogin", "responses": {"200": {"description": "Customer session"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"description": "Rate limited"}}}},
+    "/v1/ops/login": {"post": {"tags": ["ops"], "operationId": "opsLogin", "responses": {"200": {"description": "Ops session"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "429": {"description": "Rate limited"}}}},
+    "/v1/customer/bootstrap": {"get": {"tags": ["customer"], "operationId": "customerBootstrap", "security": [{"customerSession": []}], "responses": {"200": {"description": "Own accounts, catalog, and public agent cards"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}},
+    "/v1/customer/mandates": {
+      "get": {"tags": ["customer"], "operationId": "listMandates", "security": [{"customerSession": []}], "responses": {"200": {"description": "Own mandate page"}}},
+      "post": {"tags": ["customer"], "operationId": "createMandate", "security": [{"customerSession": []}], "responses": {"201": {"description": "Signed immutable mandate"}, "400": {"$ref": "#/components/responses/BadRequest"}}}
+    },
+    "/v1/customer/mandates/{id}/revoke": {"post": {"tags": ["customer"], "operationId": "revokeMandate", "security": [{"customerSession": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "responses": {"200": {"description": "Revoked idempotently"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/v1/customer/escalations": {"get": {"tags": ["customer"], "operationId": "listEscalations", "security": [{"customerSession": []}], "parameters": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": ["PENDING"]}}, {"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Own escalation page"}}}},
+    "/v1/customer/escalations/{id}/decision": {"post": {"tags": ["customer"], "operationId": "decideEscalation", "security": [{"customerSession": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EscalationDecisionRequest"}}}}, "responses": {"200": {"description": "Terminal decision state"}, "202": {"description": "Processing approved action"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}}}},
+    "/v1/customer/stream": {"get": {"tags": ["customer"], "operationId": "customerStream", "security": [{"customerSession": []}], "responses": {"200": {"description": "Customer-filtered SSE"}}}},
+    "/v1/ops/stream": {"get": {"tags": ["ops"], "operationId": "opsStream", "security": [{"opsSession": []}], "responses": {"200": {"description": "Ops SSE"}}}},
+    "/v1/ops/agents": {"get": {"tags": ["ops"], "operationId": "listAgents", "security": [{"opsSession": []}], "responses": {"200": {"description": "Registered agent page"}}}},
+    "/v1/ops/agents/{id}/suspend": {"post": {"tags": ["ops"], "operationId": "suspendAgent", "security": [{"opsSession": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "responses": {"200": {"description": "Agent suspended"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/v1/ops/agents/{id}/reinstate": {"post": {"tags": ["ops"], "operationId": "reinstateAgent", "security": [{"opsSession": []}], "parameters": [{"$ref": "#/components/parameters/PathId"}], "responses": {"200": {"description": "Agent active for future actions"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/v1/audit/entries": {"get": {"tags": ["audit"], "operationId": "listAuditEntries", "security": [{"opsSession": []}], "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Redacted audit page"}}}},
+    "/v1/audit/verify": {"get": {"tags": ["audit"], "operationId": "verifyAudit", "security": [{"opsSession": []}], "responses": {"200": {"description": "Verification report"}}}},
+    "/v1/audit/evidence/{request_id}": {"get": {"tags": ["audit"], "operationId": "getEvidence", "security": [{"opsSession": []}], "parameters": [{"$ref": "#/components/parameters/RequestId"}], "responses": {"200": {"description": "JSON evidence bundle"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+    "/health/live": {"get": {"tags": ["health"], "operationId": "live", "responses": {"200": {"description": "Process live"}}}},
+    "/health/ready": {"get": {"tags": ["health"], "operationId": "ready", "responses": {"200": {"description": "Contract/profile/provider readiness without secrets"}, "503": {"description": "Not ready"}}}},
+    "/v1/dev/reset": {"post": {"tags": ["dev"], "operationId": "devReset", "security": [{"devControl": []}], "responses": {"200": {"description": "Disposable scripted data reset"}, "404": {"description": "Route absent in real mode"}}}},
+    "/v1/dev/clock": {"post": {"tags": ["dev"], "operationId": "devClock", "security": [{"devControl": []}], "responses": {"200": {"description": "Scripted frozen clock changed"}, "404": {"description": "Route absent in real mode"}}}}
+  },
+  "components": {
+    "securitySchemes": {
+      "agentDPoP": {"type": "http", "scheme": "DPoP", "description": "Authorization DPoP token plus DPoP proof header"},
+      "customerSession": {"type": "http", "scheme": "bearer"},
+      "opsSession": {"type": "http", "scheme": "bearer"},
+      "registrarSession": {"type": "http", "scheme": "bearer"},
+      "devControl": {"type": "apiKey", "in": "header", "name": "X-AgentGate-Dev-Credential"}
+    },
+    "parameters": {
+      "PathId": {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}},
+      "RequestId": {"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}},
+      "Cursor": {"name": "cursor", "in": "query", "schema": {"type": ["string", "null"]}},
+      "Limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}}
+    },
+    "schemas": {
+      "Intent": {"type": "object", "additionalProperties": false, "required": ["task", "category"], "properties": {"task": {"type": "string", "minLength": 1}, "category": {"type": "string", "minLength": 1}, "note": {"type": ["string", "null"], "maxLength": 500}}},
+      "MoneyActionRequest": {"type": "object", "additionalProperties": false, "required": ["from_account", "payee_id", "amount_paise", "currency", "intent"], "properties": {"from_account": {"type": "string", "minLength": 1}, "payee_id": {"type": "string", "minLength": 1}, "amount_paise": {"type": "integer", "minimum": 1}, "currency": {"const": "INR"}, "reference": {"type": ["string", "null"], "maxLength": 120}, "intent": {"$ref": "#/components/schemas/Intent"}}},
+      "EscalationDecisionRequest": {"type": "object", "additionalProperties": false, "required": ["decision"], "properties": {"decision": {"type": "string", "enum": ["APPROVE", "REJECT"]}, "pin": {"type": ["string", "null"]}, "suspend_agent": {"type": "boolean", "default": false}}},
+      "ErrorDetail": {"type": "object", "additionalProperties": false, "required": ["code", "message", "request_id"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "request_id": {"type": "string"}}},
+      "ErrorEnvelope": {"type": "object", "additionalProperties": false, "required": ["error"], "properties": {"error": {"$ref": "#/components/schemas/ErrorDetail"}}}
+    },
+    "responses": {
+      "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
+      "Unauthorized": {"description": "Invalid or missing credentials", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
+      "Forbidden": {"description": "Authenticated but not authorized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
+      "NotFound": {"description": "Unknown or not owned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
+      "Conflict": {"description": "State or idempotency conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "contract_version": "1.0.0",
+  "owner": "D",
+  "action_states": ["PENDING_APPROVAL", "EXECUTED", "REJECTED", "EXECUTION_UNKNOWN", "FAILED"],
+  "approval_states": ["PENDING", "APPROVED", "EXECUTED", "REJECTED", "EXPIRED", "CANCELLED", "FAILED"],
+  "transport_cases": ["success", "denied", "pending", "dependency_failure", "stream_resync"],
+  "mock_mode_must_be_visible": true
+}

@@ -1,0 +1,10 @@
+{
+  "contract_version": "1.0.0",
+  "owner": "A",
+  "cases": [
+    {"name": "allowed_bill", "amount_paise": 185000, "payee_id": "BILL-ELEC", "expected": "ALLOW"},
+    {"name": "per_txn_cap_exceeded", "amount_paise": 700000, "payee_id": "BILL-ELEC", "expected": "DENY"},
+    {"name": "unlisted_payee", "amount_paise": 185000, "payee_id": "BILL-MOBILE", "expected": "DENY"},
+    {"name": "dependency_failure", "provider": "audit", "mode": "unavailable", "expected": "NO_BANK_CALL"}
+  ]
+}

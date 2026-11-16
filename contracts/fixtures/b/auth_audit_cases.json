@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0.0",
+  "owner": "B",
+  "cases": [
+    {"name": "valid_proof", "expected_http": 200},
+    {"name": "replayed_proof", "expected_http": 401, "code": "E_AUTH_REPLAY"},
+    {"name": "wrong_key", "expected_http": 401, "code": "E_AUTH_KEY_MISMATCH"},
+    {"name": "suspended_agent", "expected_http": 403, "code": "E_AUTH_AGENT_SUSPENDED"},
+    {"name": "audit_unavailable", "expected_http": 503, "code": "E_AUDIT_WRITE_FAILED"}
+  ],
+  "secrets_present": false
+}

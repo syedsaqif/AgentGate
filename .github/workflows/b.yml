@@ -1,0 +1,36 @@
+name: Track B scaffold
+
+on:
+  pull_request:
+    paths:
+      - "contracts/identity_*.py"
+      - "contracts/audit_*.py"
+      - "contracts/canonical.py"
+      - "contracts/reason_codes.py"
+      - "contracts/http/b.yaml"
+      - "contracts/fixtures/b/**"
+      - "gateway/identity/**"
+      - "gateway/audit/**"
+      - "agent_sdk/**"
+      - "tests/b/**"
+      - "tests/support/b/**"
+      - "tools/tamper.py"
+      - "tools/verify_vectors.py"
+      - ".github/workflows/b.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold-b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m tools.dev check-contracts --owner b
+      - run: uv run python -m tools.verify_vectors
+      - run: uv run pytest tests/b

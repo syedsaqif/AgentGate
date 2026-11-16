@@ -1,0 +1,44 @@
+name: Bootstrap integration gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts-and-scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m tools.dev check-contracts
+      - run: uv run pytest -m "scaffold or contract"
+      - run: uv run ruff check contracts tests tools/dev.py tools/verify_vectors.py
+
+  frontend-scaffold:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - run: npm run build
+
+# This workflow is deliberately named a bootstrap gate. Replace/extend it with
+# real-provider API compatibility, integration, scenario/race, and UI smoke
+# gates as IC1-IC4 features land; never relabel fixture checks as security proof.

@@ -1,0 +1,11 @@
+{
+  "contract_version": "1.0.0",
+  "owner": "C",
+  "risk_cases": [
+    {"name": "ordinary_bill", "score": 10, "level": "LOW", "recommended": "ALLOW"},
+    {"name": "approval_step_up", "score": 50, "level": "MEDIUM", "recommended": "ESCALATE"},
+    {"name": "breaker", "score": 85, "level": "HIGH", "recommended": "DENY", "breaker_recommended": true},
+    {"name": "risk_error", "score": 50, "level": "MEDIUM", "recommended": "ESCALATE"}
+  ],
+  "approval_terminal_states": ["EXECUTED", "REJECTED", "EXPIRED", "CANCELLED", "FAILED"]
+}

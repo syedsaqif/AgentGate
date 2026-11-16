@@ -1,0 +1,39 @@
+contract_version: "1.0.0"
+owner: A
+routes:
+  - {method: GET, path: "/v1/accounts/{id}/balance", auth: agent_dpop}
+  - {method: GET, path: "/v1/accounts/{id}/transactions", auth: agent_dpop}
+  - {method: POST, path: "/v1/payments/bills", auth: agent_dpop, idempotency: required}
+  - {method: POST, path: "/v1/transfers", auth: agent_dpop, idempotency: required}
+  - {method: GET, path: "/v1/actions/{request_id}", auth: agent_dpop_owned}
+  - {method: GET, path: "/v1/customer/bootstrap", auth: customer_session}
+  - {method: POST, path: "/v1/customer/mandates", auth: customer_session_pin}
+  - {method: GET, path: "/v1/customer/mandates", auth: customer_session}
+  - {method: POST, path: "/v1/customer/mandates/{id}/revoke", auth: customer_session_owned}
+  - {method: GET, path: "/v1/customer/stream", auth: customer_session}
+  - {method: GET, path: "/v1/ops/stream", auth: ops_session}
+  - {method: GET, path: "/health/live", auth: none}
+  - {method: GET, path: "/health/ready", auth: none}
+  - {method: POST, path: "/v1/dev/reset", auth: scripted_dev_only}
+  - {method: POST, path: "/v1/dev/clock", auth: scripted_dev_only}
+bank_routes:
+  service_auth: required
+  paths:
+    - GET /bank/accounts/{id}/balance
+    - GET /bank/accounts/{id}/transactions
+    - POST /bank/payments
+    - POST /bank/transfers
+    - GET /bank/operations/{bank_idempotency_key}
+examples:
+  pending:
+    request_id: req_demo_1
+    decision: ESCALATE
+    status: PENDING_APPROVAL
+    escalation_id: esc_demo_1
+    expires_at: "2026-11-17T04:05:00Z"
+    audit_ref: {seq: 12, entry_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  denied:
+    error:
+      code: E_POLICY_PAYEE_NOT_ALLOWED
+      message: This payee is outside the mandate.
+      request_id: req_demo_2

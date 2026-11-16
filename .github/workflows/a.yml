@@ -1,0 +1,45 @@
+name: Track A scaffold
+
+on:
+  pull_request:
+    paths:
+      - "contracts/common.py"
+      - "contracts/core_*.py"
+      - "contracts/http/a.yaml"
+      - "contracts/fixtures/a/**"
+      - "gateway/main.py"
+      - "gateway/deps.py"
+      - "gateway/pipeline.py"
+      - "gateway/config.py"
+      - "gateway/errors.py"
+      - "gateway/platform/**"
+      - "gateway/mandates/**"
+      - "gateway/executor/**"
+      - "gateway/events/**"
+      - "bank_mock/**"
+      - "tests/a/**"
+      - "tests/support/a/**"
+      - "tools/dev.py"
+      - "tools/seed.py"
+      - "tools/reset.py"
+      - "tools/export_openapi.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "config.yaml"
+      - ".github/workflows/a.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m tools.dev check-contracts --owner a
+      - run: uv run pytest tests/a

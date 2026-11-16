@@ -1,0 +1,13 @@
+contract_version: "1.0.0"
+owner: C
+routes:
+  - {method: GET, path: "/v1/escalations/{id}", auth: agent_dpop_owned}
+  - {method: GET, path: "/v1/customer/escalations", auth: customer_session_owned}
+  - {method: POST, path: "/v1/customer/escalations/{id}/decision", auth: customer_session_owned}
+approval:
+  states: [PENDING, APPROVED, EXECUTED, REJECTED, EXPIRED, CANCELLED, FAILED]
+  decisions: [APPROVE, REJECT]
+  default_ttl_seconds: 300
+  scripted_ttl_seconds: 60
+  max_pending_per_mandate: 3
+  replacement_action_parameters: forbidden
