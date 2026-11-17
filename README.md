@@ -2,6 +2,8 @@
 
 AgentGate is a four-track hackathon prototype for controlling bank actions requested by AI agents. This repository is at the **IC0 bootstrap stage**: architecture, ownership, contracts, fixtures, developer tooling, and CI scaffolding exist; product and security features do not.
 
+Private GitHub repository: <https://github.com/syedsaqif/AgentGate>
+
 The source of truth is [`TEAM_TASK_DISTRIBUTION (28).md`](./TEAM_TASK_DISTRIBUTION%20(28).md). Do not treat passing scaffold checks as evidence that any security capability is implemented.
 
 ## Architecture and ownership
