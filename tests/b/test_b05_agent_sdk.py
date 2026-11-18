@@ -410,6 +410,25 @@ class TestSDKMockTransportSecurity:
             assert len(set(seen_resource_jtis)) == 2
             assert set(seen_resource_idem_keys) == {"bill-refresh-1"}
 
+            # 1b. Refresh on E_AUTH_EXPIRED must not consume the transport retry budget
+            # (with max_attempts=1, a single token refresh still succeeds!).
+            clock.advance(seconds=10)
+            client.token_manager.invalidate()
+            res_single_attempt = await client.request_signed(
+                "POST",
+                "/v1/payments/bills",
+                json_body={
+                    "from_account": "ACC-001",
+                    "payee_id": "BILL-ELEC",
+                    "amount_paise": 100000,
+                    "currency": "INR",
+                    "intent": {"task": "pay", "category": "utilities"},
+                },
+                idempotency_key="bill-refresh-1b",
+                retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.0),
+            )
+            assert res_single_attempt.status_code == 200
+
             # 2. Mandate revoked: advance clock so token expires -> refresh MUST fail 403!
             mandate_status = "REVOKED"
             clock.advance(seconds=125)

@@ -145,6 +145,7 @@ async def execute_with_fresh_proof_retry(
         api_err = parse_api_error(response)
 
         # Refresh once ONLY on E_AUTH_EXPIRED (never on revoked/suspended/mismatch/replay).
+        # Do not consume a transport-retry attempt on the single allowed token refresh.
         if (
             response.status_code == 401
             and api_err.error_code == ReasonCode.E_AUTH_EXPIRED.value
@@ -154,6 +155,7 @@ async def execute_with_fresh_proof_retry(
             refreshed_on_expired = True
             token_manager.invalidate()
             force_refresh = True
+            attempt -= 1
             continue
 
         if response.status_code in policy.retryable_statuses and attempt < policy.max_attempts:
