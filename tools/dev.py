@@ -1,16 +1,14 @@
-"""Member A cross-platform bootstrap validation CLI.
-
-Only contract/scaffold validation is implemented in the initialization commit.
-Service, stack, reset, and feature commands remain owned roadmap tasks.
-"""
+"""Member A cross-platform developer CLI and service launcher."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+import uvicorn
 import yaml
 
 from contracts import CONTRACT_VERSION
@@ -100,14 +98,34 @@ def check_contracts(owner: str | None = None) -> None:
     print("This is an IC0 check only; it does not claim feature or security implementation.")
 
 
+def run_service(owner: str, profile: str, host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Launch the appropriate application service for local track development."""
+    os.environ["AGENTGATE_PROFILE"] = profile
+    if owner == "a":
+        print(f"Starting Track A Gateway on http://{host}:{port} with profile '{profile}'...")
+        uvicorn.run("gateway.main:app", host=host, port=port, log_level="info")
+    else:
+        print(f"Service for owner '{owner}' is reserved for that track's roadmap tasks.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m tools.dev")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
     check = subparsers.add_parser("check-contracts")
     check.add_argument("--owner", choices=tuple(OWNER_FIXTURES))
+
+    service = subparsers.add_parser("service")
+    service.add_argument("owner", choices=("a", "b", "c", "d"))
+    service.add_argument("--profile", default="test", choices=("test", "scripted", "real"))
+    service.add_argument("--host", default="127.0.0.1")
+    service.add_argument("--port", type=int, default=8000)
+
     args = parser.parse_args()
     if args.command == "check-contracts":
         check_contracts(args.owner)
+    elif args.command == "service":
+        run_service(owner=args.owner, profile=args.profile, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
