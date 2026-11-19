@@ -25,6 +25,7 @@
 - **Idempotency**: Attempts are deduplicated on `attempt_id`.
 
 ## 4. Signal Catalog & Noisy-OR Combination (Task C03)
+- **Model Version**: `1.0.0-noisy_or`
 - **10 Deterministic Signals** (`gateway/risk/signals.py`):
   1. `new_payee` (severity 50, weight 0.40)
   2. `amount_outlier` (severity 80, weight 0.625)
@@ -36,31 +37,38 @@
   8. `probing` (severity 95, weight 0.90) — hard trip
   9. `intent_mismatch` (severity 75, weight 0.60)
   10. `read_enumeration` (severity 60, weight 0.35)
-- **Noisy-OR Formula**:
+- **Noisy-OR Aggregation Formula**:
   $$P = 1 - \prod_{i \in \text{fired}} \left(1 - w_i \cdot \frac{s_i}{100}\right), \quad \text{Score} = \text{round}(100 \times P)$$
-- **Profile Thresholds**:
+- **Profile Threshold Bands**:
   - `balanced`: $35 / 70$
   - `conservative`: $25 / 60$
   - `permissive`: $45 / 80$
+- **Band-to-Decision Mapping**:
+  - **LOW** ($\text{score} < \text{threshold}_{\text{escalate}}$, e.g. $< 35$): Maps to `FinalDecision.ALLOW` (direct execution without human intervention).
+  - **MEDIUM** ($\text{threshold}_{\text{escalate}} \le \text{score} < \text{threshold}_{\text{deny}}$, e.g. $35 \le \text{score} < 70$): Maps to `FinalDecision.ESCALATE` (pause for human approval step-up).
+  - **HIGH** ($\text{score} \ge \text{threshold}_{\text{deny}}$, e.g. $\ge 70$): Maps to `FinalDecision.DENY` (hard block; evaluates circuit breaker recommendation).
 - **Calibration**:
   - Ordinary ₹1,850 electricity bill with seeded history: score $< 35$ (**LOW** / `ALLOW`).
   - Unusual ₹4,800 payment: score $50$ (**MEDIUM** / `ESCALATE`, approvable step-up).
-- **Rule Neutrality**: No rule checks `scenario_id`.
+  - Rogue ₹40,000 prompt injection to unverified payee: score $\ge 70$ (**HIGH** / `DENY`).
+- **Rule Neutrality**: No risk rule checks `scenario_id`. Signals evaluate purely on historical baselines and request features.
 
 ## 5. Escalation & Approval Lifecycle (Task C05)
-- **Table ownership**: Member C writes exclusively to `escalations`.
+- **Table ownership**: Member C writes exclusively to the `escalations` table.
+- **Approval States**: `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED`, `EXECUTED`, `FAILED`.
+- **Dynamic TTL**: Expiration deadline `expires_at` is read from injected configuration (`config.escalation_ttl_seconds`), defaulting to 300 seconds (scripted profile uses 60 seconds). It is never hardcoded.
+- **Pending Limit**: Maximum 3 `PENDING` escalations per mandate. A 4th attempt returns `E_ESC_LIMIT_REACHED` (HTTP 409).
 - **Atomic state transitions**:
-  - `PENDING -> APPROVED`: Requires valid customer PIN via `HumanAuth.verify_pin`. Emits `escalation.approved` audit event.
+  - `PENDING -> APPROVED`: Requires valid customer PIN via `HumanAuth.verify_pin`. Emits `escalation.approved` audit event in the same transaction.
   - `APPROVED -> EXECUTED`: Single-use atomic `claim_execution` verifying `action_hash`. Hands off to `ExecutionPort.execute_stored`.
   - `PENDING -> REJECTED`: Terminal rejection. Optional `suspend_agent=True` invokes `Lifecycle.suspend_customer_delegation`.
-  - `PENDING -> EXPIRED`: Swept by `expire_due` on startup and periodically.
+  - `PENDING -> EXPIRED`: Swept by `expire_due(now)` on startup and periodically.
   - `PENDING / APPROVED -> CANCELLED`: Invoked on mandate revocation (`cancel_for_mandate`) or agent suspension (`cancel_for_agent`).
-- **Pending limit**: Maximum 3 pending escalations per mandate. 4th attempt returns `E_ESC_LIMIT_REACHED` (HTTP 409).
 - **Trusted summary security**:
   - Account numbers masked (`**1234`).
   - Payee verified against trusted registry.
-  - Agent free-text note strictly segregated under `agent_note` with `"unverified": true`. Never merged into trusted fields.
-- **Enumeration defense**: Queries for non-existent IDs or unauthorized subjects return identical HTTP 404 responses.
+  - Agent free-text note strictly segregated under `agent_note` with `"unverified": true`. Never merged into trusted fields. The UI escapes it.
+- **Enumeration defense**: Queries for non-existent IDs or unauthorized subjects return identical HTTP 404 responses (`E_ESC_NOT_FOUND`).
 
 ## 6. Execution Handoff & Crash Recovery (Task C06)
 - **Pre-dispatch constraint re-evaluation (`claim_execution`)**:
@@ -82,8 +90,12 @@
   - Dispatches each record exactly once.
 
 ## 7. Contract Questions & Integration Notes
-- **PIN & Lifecycle separation**: `contracts/escalation_ports.py` defines `EscalationService.decide(escalation_id, decision, subject_id, tx)`. To preserve clean separation of concerns, `HumanAuth.verify_pin(customer_id, pin)` is evaluated in the route handler prior to calling `decide()`. If wrong PIN is supplied, the escalation remains `PENDING`, an `auth.pin_failed` audit event is emitted, and HTTP 403 `E_ESC_BAD_PIN` is returned.
-- **Reject-and-suspend coordination**: If a customer selects `suspend_agent=true` on rejection, the route calls `Lifecycle.suspend_customer_delegation` to suspend that customer's delegation without affecting other customers.
+- **PIN & Lifecycle separation in `decide()`**:
+  - *Contract definition*: `contracts/escalation_ports.py` defines `EscalationService.decide(escalation_id, decision, subject_id, tx)`.
+  - *Design resolution*: To maintain separation of concerns and avoid coupling the escalation state machine to human authentication or global lifecycle management, `HumanAuth.verify_pin(customer_id, pin)` is evaluated in the route handler (`POST /v1/customer/escalations/{id}/decision`) prior to calling `decide()`. If wrong PIN is supplied, the escalation remains `PENDING`, an `auth.pin_failed` audit event is emitted, and HTTP 403 `E_ESC_BAD_PIN` is returned. If `suspend_agent=true` is requested on rejection, the route calls `Lifecycle.suspend_customer_delegation`.
+- **`record_outcome` typing gap in `RiskEngine`**:
+  - *Contract definition*: `contracts/risk_ports.py` defines `record_outcome(outcome: object, tx: Tx) -> None`.
+  - *Design resolution*: Parameter `outcome` is typed as generic `object` rather than `ExecutionResult`. Member C's implementation inspects `getattr(outcome, "status", None)` or string values for resilience. Recommended for Member A: update typing to `ExecutionResult` in `contracts/risk_ports.py` for v1.1.0.
 
 ## 8. Scenario Runner Foundation & Scenarios S1-S4 (Task C07a)
 - **Deterministic Orchestration**:
@@ -201,4 +213,29 @@
 - **Post-IC2 Integration Note**:
   - Full end-to-end integration against Member A's live SQLite connection factory and Member B's real Agent SDK is staged and deferred until post-IC2 landing.
   - Real-stack tests in `tests/integration/test_scenarios.py` and `tests/c/test_execution_handoff.py` skip cleanly with descriptive explanations when fake doubles are detected.
+
+## 12. Handoff to Team (Fixtures, Data, Clock, Fakes, Adapters)
+- **Contract Version**: `1.0.0`
+- **Track C Owned Files**:
+  - `gateway/risk/`: `models.py`, `schema.py`, `history.py`, `features.py`, `signals.py`, `scoring.py`, `breaker.py`, `service.py`.
+  - `gateway/escalation/`: `models.py`, `schema.py`, `summary.py`, `expiry.py`, `service.py`, `routes.py`.
+  - `simulator/`: `client_port.py`, `personas.py`, `history_seed.py`, `runner.py`, `scenarios/` (S01–S11).
+  - `tests/c/`: `test_contracts.py`, `test_fakes.py`, `test_history.py`, `test_scoring.py`, `test_breaker.py`, `test_escalation.py`, `test_execution_handoff.py`, `test_metrics.py`.
+  - `tests/support/c/`: `providers.py` (all Member C test doubles and fixture factories).
+  - `tools/`: `metrics.py`.
+- **Fixtures & Test Doubles (`tests/support/c/providers.py`)**:
+  - `FixtureRiskEngine`: In-memory risk engine with configurable verdict and invocation tracking.
+  - `RecordingExecutionPort`: Records exact request IDs and escalation IDs, asserting no modified parameters reach the bank.
+  - `FixtureHumanAuth`, `FixtureLifecycle`, `FixtureMandateReader`, `FixtureAgentRegistry`, `FixtureUsageReader`, `FixtureAuditLog`: Port substitutes for offline testing.
+- **Seeded Data & Deterministic Clock**:
+  - 60-day synthetic baseline generated using `DEFAULT_SEED = 42`.
+  - Deterministic clock injected via `now: datetime` parameter across all modules; zero real wall-clock sleeps.
+- **Provider Adapters**:
+  - `RiskEngineService`: Implements `contracts/risk_ports.py::RiskEngine`.
+  - `EscalationServiceImpl`: Implements `contracts/escalation_ports.py::EscalationService`.
+  - `FixtureScenarioClient`: Implements `simulator/client_port.py::ScenarioClient`.
+- **Security & Hygiene**:
+  - Zero hard-coded PINs, private keys, or tokens.
+  - No database files, binary checkpoints, or transient evidence artifacts are committed.
+
 
