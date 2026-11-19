@@ -3,6 +3,8 @@
 ## 1. Database & Persistence
 - `gateway/risk/models.py` defines a local `Base = DeclarativeBase()` for Member C tables (`risk_attempts`, `risk_baselines`). When Member A provides the shared `Base` in `gateway/platform/db.py`, these models can inherit from it directly.
 - `gateway/risk/schema.py` exposes `register_risk_tables(metadata)` for Member A's composition root.
+- `gateway/escalation/models.py` defines `EscalationRecord` mapping to table `escalations`.
+- `gateway/escalation/schema.py` exposes `register_escalation_tables(metadata)` for Member A's composition root.
 
 ## 2. Robust Statistics & Edge Cases
 - **Median & MAD (Median Absolute Deviation)**:
@@ -44,3 +46,22 @@
   - Ordinary ₹1,850 electricity bill with seeded history: score $< 35$ (**LOW** / `ALLOW`).
   - Unusual ₹4,800 payment: score $50$ (**MEDIUM** / `ESCALATE`, approvable step-up).
 - **Rule Neutrality**: No rule checks `scenario_id`.
+
+## 5. Escalation & Approval Lifecycle (Task C05)
+- **Table ownership**: Member C writes exclusively to `escalations`.
+- **Atomic state transitions**:
+  - `PENDING -> APPROVED`: Requires valid customer PIN via `HumanAuth.verify_pin`. Emits `escalation.approved` audit event.
+  - `APPROVED -> EXECUTED`: Single-use atomic `claim_execution` verifying `action_hash`. Hands off to `ExecutionPort.execute_stored`.
+  - `PENDING -> REJECTED`: Terminal rejection. Optional `suspend_agent=True` invokes `Lifecycle.suspend_customer_delegation`.
+  - `PENDING -> EXPIRED`: Swept by `expire_due` on startup and periodically.
+  - `PENDING / APPROVED -> CANCELLED`: Invoked on mandate revocation (`cancel_for_mandate`) or agent suspension (`cancel_for_agent`).
+- **Pending limit**: Maximum 3 pending escalations per mandate. 4th attempt returns `E_ESC_LIMIT_REACHED` (HTTP 409).
+- **Trusted summary security**:
+  - Account numbers masked (`**1234`).
+  - Payee verified against trusted registry.
+  - Agent free-text note strictly segregated under `agent_note` with `"unverified": true`. Never merged into trusted fields.
+- **Enumeration defense**: Queries for non-existent IDs or unauthorized subjects return identical HTTP 404 responses.
+
+## 6. Contract Questions & Integration Notes
+- **PIN & Lifecycle separation**: `contracts/escalation_ports.py` defines `EscalationService.decide(escalation_id, decision, subject_id, tx)`. To preserve clean separation of concerns, `HumanAuth.verify_pin(customer_id, pin)` is evaluated in the route handler prior to calling `decide()`. If wrong PIN is supplied, the escalation remains `PENDING`, an `auth.pin_failed` audit event is emitted, and HTTP 403 `E_ESC_BAD_PIN` is returned.
+- **Reject-and-suspend coordination**: If a customer selects `suspend_agent=true` on rejection, the route calls `Lifecycle.suspend_customer_delegation` to suspend that customer's delegation without affecting other customers.
