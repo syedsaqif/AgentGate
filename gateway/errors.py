@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -72,7 +71,7 @@ def build_error_response(
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Middleware ensuring every request has a server-generated X-Request-ID and handling exceptions."""
+    """Middleware attaching a server-generated X-Request-ID to all responses."""
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]

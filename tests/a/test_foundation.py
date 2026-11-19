@@ -13,7 +13,6 @@ from sqlalchemy import Column, Integer, String, text
 
 from contracts.common import ErrorEnvelope
 from contracts.reason_codes import ReasonCode
-from gateway.deps import Dependencies, is_fake_provider
 from gateway.errors import AgentGateError
 from gateway.main import create_app
 from gateway.platform.db import (
@@ -174,7 +173,8 @@ async def test_sqlite_wal_pragmas_and_uow(tmp_path: Path) -> None:
 
     # Verify committed
     async with session_factory() as verify_session:
-        result = await verify_session.execute(text("SELECT name FROM test_records WHERE name = 'Alice';"))
+        stmt = text("SELECT name FROM test_records WHERE name = 'Alice';")
+        result = await verify_session.execute(stmt)
         assert result.scalar() == "Alice"
 
     # 2. Test rollback on exception
@@ -186,7 +186,8 @@ async def test_sqlite_wal_pragmas_and_uow(tmp_path: Path) -> None:
 
     # Verify rolled back
     async with session_factory() as verify_session:
-        result_bob = await verify_session.execute(text("SELECT name FROM test_records WHERE name = 'Bob';"))
+        stmt_bob = text("SELECT name FROM test_records WHERE name = 'Bob';")
+        result_bob = await verify_session.execute(stmt_bob)
         assert result_bob.scalar() is None
 
     await engine.dispose()

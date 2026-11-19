@@ -12,7 +12,6 @@ from bank_mock.main import create_bank_app
 from contracts.core_models import (
     ActionParams,
     ActionType,
-    BankResult,
     BankStatus,
     CanonicalAction,
     Intent,

@@ -13,7 +13,14 @@ from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
 from gateway.deps import Dependencies, build_dependencies
 from gateway.errors import RequestIdMiddleware, register_error_handlers
-from gateway.platform.db import Base, create_db_engine, create_session_factory
+from gateway.mandates.routes import router as customer_mandates_router
+from gateway.mandates.service import MandateService
+from gateway.platform.db import (
+    Base,
+    SqliteUnitOfWork,
+    create_db_engine,
+    create_session_factory,
+)
 from gateway.platform.health import router as health_router
 from gateway.platform.startup import init_database
 
@@ -28,12 +35,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     deps.validate_for_profile()
 
     # Configure database engine & session factory if not already supplied
-    if deps.unit_of_work is None and config.database.gateway_url:
-        engine = create_db_engine(config.database.gateway_url)
-        session_factory = create_session_factory(engine)
-        app.state.engine = engine
-        app.state.session_factory = session_factory
+    if config.database.gateway_url:
+        engine = getattr(app.state, "engine", None)
+        if engine is None:
+            engine = create_db_engine(config.database.gateway_url)
+            session_factory = create_session_factory(engine)
+            app.state.engine = engine
+            app.state.session_factory = session_factory
+            if deps.unit_of_work is None:
+                deps.unit_of_work = SqliteUnitOfWork(session_factory)
         await init_database(engine, Base.metadata)
+
+    # Initialize mandate service if dependencies are present
+    if deps.mandate_service is None and deps.unit_of_work is not None:
+        deps.mandate_service = MandateService(
+            human_auth=deps.human_auth,
+            agent_registry=deps.agent_registry,
+            audit_log=deps.audit_log,
+            catalog=deps.catalog,
+            clock=deps.clock,
+            unit_of_work=deps.unit_of_work,
+            session_factory=app.state.session_factory,
+        )
+        deps.mandate_reader = deps.mandate_service
+        deps.usage_reader = deps.mandate_service
 
     yield
 
@@ -66,14 +91,39 @@ def create_app(
     app.state.deps = deps
     app.state.overrides = overrides
 
+    # If DB URL provided, set engine & session factory so unit tests without lifespan have DB
+    if config.database.gateway_url:
+        engine = create_db_engine(config.database.gateway_url)
+        session_factory = create_session_factory(engine)
+        app.state.engine = engine
+        app.state.session_factory = session_factory
+        if deps.unit_of_work is None:
+            deps.unit_of_work = SqliteUnitOfWork(session_factory)
+
+    # Ensure MandateService is wired on deps
+    session_factory = getattr(app.state, "session_factory", None)
+    if deps.mandate_service is None and deps.unit_of_work is not None and session_factory:
+        deps.mandate_service = MandateService(
+            human_auth=deps.human_auth,
+            agent_registry=deps.agent_registry,
+            audit_log=deps.audit_log,
+            catalog=deps.catalog,
+            clock=deps.clock,
+            unit_of_work=deps.unit_of_work,
+            session_factory=app.state.session_factory,
+        )
+        deps.mandate_reader = deps.mandate_service
+        deps.usage_reader = deps.mandate_service
+
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
 
     # Register uniform error envelope handlers
     register_error_handlers(app)
 
-    # Mount platform health router
+    # Mount platform routers
     app.include_router(health_router)
+    app.include_router(customer_mandates_router)
 
     return app
 

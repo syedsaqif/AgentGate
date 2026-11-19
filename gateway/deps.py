@@ -23,6 +23,7 @@ from contracts.identity_models import AuthContext
 from contracts.identity_ports import AgentRegistry, HumanAuth, IdentityVerifier, TokenService
 from contracts.risk_ports import RiskEngine
 from gateway.config import AgentGateConfig
+from gateway.mandates.models import Catalog
 from gateway.platform.clock import SystemClock
 
 
@@ -52,11 +53,13 @@ class Dependencies:
     human_auth: HumanAuth | None = None
     agent_registry: AgentRegistry | None = None
     token_service: TokenService | None = None
+    catalog: Catalog | None = None
 
     audit_log: AuditLog | None = None
     risk_engine: RiskEngine | None = None
     escalation_service: EscalationService | None = None
 
+    mandate_service: Any = None
     mandate_reader: MandateReader | None = None
     usage_reader: UsageReader | None = None
     policy_evaluator: PolicyEvaluator | None = None
@@ -134,9 +137,13 @@ def build_test_dependencies(
     config: AgentGateConfig, overrides: dict[str, Any] | None = None
 ) -> Dependencies:
     """Build default dependencies for the test profile using support test doubles."""
-    # Lazy import to avoid loading test modules in production
     from contracts.risk_models import RiskLevel, RiskResult
-    from tests.support.a.providers import FakeBank
+    from tests.support.a.providers import (
+        FakeAgentRegistry,
+        FakeBank,
+        FakeCatalog,
+        FakeHumanAuth,
+    )
     from tests.support.b.providers import FixtureIdentityVerifier, MemoryAuditLog
     from tests.support.c.providers import FixtureRiskEngine, RecordingExecutionPort
     from tests.support.platform import FrozenClock
@@ -161,11 +168,19 @@ def build_test_dependencies(
     )
 
     clock = FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
+    human_auth = FakeHumanAuth()
+    agent_registry = FakeAgentRegistry()
+    audit_log = MemoryAuditLog()
+    catalog = FakeCatalog()
+
     deps = Dependencies(
         config=config,
         clock=clock,
+        human_auth=human_auth,
+        agent_registry=agent_registry,
+        catalog=catalog,
         identity_verifier=FixtureIdentityVerifier(result=default_auth),
-        audit_log=MemoryAuditLog(),
+        audit_log=audit_log,
         risk_engine=FixtureRiskEngine(result=default_risk),
         execution_port=RecordingExecutionPort(),
         bank_client=FakeBank(),
@@ -188,7 +203,6 @@ def build_dependencies(
     if config.profile == "test":
         return build_test_dependencies(config, overrides)
 
-    # In scripted or real mode, initialize empty real container and apply overrides
     clock = SystemClock()
     deps = Dependencies(config=config, clock=clock)
 
