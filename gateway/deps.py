@@ -68,6 +68,7 @@ class Dependencies:
     reservation_port: ReservationPort | None = None
     lifecycle: Lifecycle | None = None
     bank_client: BankClient | None = None
+    event_bus: Any = None
 
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -138,14 +139,20 @@ def build_test_dependencies(
 ) -> Dependencies:
     """Build default dependencies for the test profile using support test doubles."""
     from contracts.risk_models import RiskLevel, RiskResult
+    from gateway.events.bus import EventBus
     from tests.support.a.providers import (
         FakeAgentRegistry,
         FakeBank,
         FakeCatalog,
         FakeHumanAuth,
+        FakeTokenService,
     )
     from tests.support.b.providers import FixtureIdentityVerifier, MemoryAuditLog
-    from tests.support.c.providers import FixtureRiskEngine, RecordingExecutionPort
+    from tests.support.c.providers import (
+        FixtureRiskEngine,
+        MemoryEscalationStore,
+        RecordingExecutionPort,
+    )
     from tests.support.platform import FrozenClock
 
     default_auth = AuthContext(
@@ -170,20 +177,26 @@ def build_test_dependencies(
     clock = FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
     human_auth = FakeHumanAuth()
     agent_registry = FakeAgentRegistry()
+    token_service = FakeTokenService()
     audit_log = MemoryAuditLog()
     catalog = FakeCatalog()
+    event_bus = EventBus()
+    escalation_service = MemoryEscalationStore()
 
     deps = Dependencies(
         config=config,
         clock=clock,
         human_auth=human_auth,
         agent_registry=agent_registry,
+        token_service=token_service,
         catalog=catalog,
         identity_verifier=FixtureIdentityVerifier(result=default_auth),
         audit_log=audit_log,
         risk_engine=FixtureRiskEngine(result=default_risk),
+        escalation_service=escalation_service,
         execution_port=RecordingExecutionPort(),
         bank_client=FakeBank(),
+        event_bus=event_bus,
     )
 
     if overrides:

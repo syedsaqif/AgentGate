@@ -15,6 +15,7 @@ from gateway.mandates.models import (
     CreateMandateRequest,
     CreateMandateResponse,
     CustomerMandateListResponse,
+    RevokeMandateResponse,
 )
 
 router = APIRouter(prefix="/v1/customer", tags=["mandates"])
@@ -103,3 +104,54 @@ async def list_mandates_endpoint(
         customer_id=customer_id, limit=limit, cursor=cursor
     )
     return CustomerMandateListResponse(items=items, next_cursor=next_cursor)
+
+
+@router.post("/mandates/{mandate_id}/revoke", response_model=RevokeMandateResponse)
+async def revoke_mandate_endpoint(
+    mandate_id: str,
+    customer_id: Annotated[str, Depends(get_current_customer)],
+    deps: Annotated[Dependencies, Depends(get_deps)],
+) -> RevokeMandateResponse:
+    """Revoke a customer-owned mandate, its tokens, and pending approvals."""
+    mandate_service = getattr(deps, "mandate_service", None)
+    if not mandate_service or not deps.lifecycle:
+        raise AgentGateError(
+            code=ReasonCode.E_SERVICE_UNAVAILABLE,
+            message="Mandate or lifecycle service is not configured",
+            status_code=503,
+        )
+
+    # Enforce ownership: mandate must exist and belong to the authenticated customer
+    try:
+        snapshot = await mandate_service.get(mandate_id)
+        if snapshot.terms.customer_id != customer_id:
+            raise AgentGateError(
+                code=ReasonCode.E_REQ_INVALID,
+                message="Mandate not found",
+                status_code=404,
+            )
+    except AgentGateError as e:
+        if e.status_code == 404:
+            raise
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message="Mandate not found",
+            status_code=404,
+        ) from e
+    except Exception as exc:
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message="Mandate not found",
+            status_code=404,
+        ) from exc
+
+    audit_ref = await deps.lifecycle.revoke_mandate(
+        mandate_id=mandate_id,
+        actor=customer_id,
+        reason="Customer requested revocation",
+    )
+    return RevokeMandateResponse(
+        mandate_id=mandate_id,
+        status="REVOKED",
+        audit_ref=audit_ref,
+    )

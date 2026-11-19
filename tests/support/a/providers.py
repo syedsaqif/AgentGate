@@ -19,7 +19,7 @@ from contracts.identity_models import (
     AgentStatus,
     HumanContext,
 )
-from contracts.identity_ports import AgentRegistry, HumanAuth
+from contracts.identity_ports import AgentRegistry, HumanAuth, TokenService
 from contracts.reason_codes import ReasonCode
 from gateway.errors import AgentGateError
 from gateway.mandates.models import Catalog
@@ -270,3 +270,20 @@ class FakeAgentRegistry(AgentRegistry):
 
     async def list_public(self) -> tuple[AgentPublicIdentity, ...]:
         return tuple(self.agents.values())
+
+
+@dataclass
+class FakeTokenService(TokenService):
+    """Test double for revoking tokens per mandate or agent."""
+
+    revoked_mandates: list[str] = field(default_factory=list)
+    revoked_agents: list[str] = field(default_factory=list)
+
+    __is_fake__: bool = True
+
+    async def revoke_for_mandate(self, mandate_id: OpaqueId, tx: Tx) -> None:
+        self.revoked_mandates.append(mandate_id)
+
+    async def revoke_for_agent(self, agent_id: OpaqueId, tx: Tx) -> None:
+        self.revoked_agents.append(agent_id)
+
