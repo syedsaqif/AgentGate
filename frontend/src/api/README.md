@@ -36,3 +36,18 @@ Member B needs to publish the two login body schemas, both successful session re
 | `POST /v1/customer/mandates/{id}/revoke` | Generated path parameter, description-only idempotent `200`, and JSON `404` error envelope. | A bodyless POST follows §6.5. The UI uses `200` and refreshes the current page for authoritative status. A must confirm gateway behavior, including error codes and a success body if one is published. |
 
 The Customer bootstrap projection optionally reads `jkt` and `max_scopes` from the [public identity DTO](../../../contracts/identity_models.py). A must confirm these fields and the eligible payee catalog. The form only offers recognized scopes supplied by bootstrap and treats a missing fingerprint as unavailable. Caps, count, and optional time windows apply separately to each selected action's grant. The backend remains responsible for authorization and signing.
+
+## D03 Customer approval inbox
+
+The inbox uses the generated Customer list query, decision path and request body. `EscalationDecisionRequest` allows only `decision`, `pin`, and `suspend_agent`. Approve sends the PIN; the reject controls omit it. The Customer bearer session is required for both routes. See [OpenAPI](../../../contracts/openapi.json#L30) and the [Member C HTTP fragment](../../../contracts/http/c.yaml).
+
+| Operation | Published coverage and provisional response mapping |
+| --- | --- |
+| `GET /v1/customer/escalations?status=PENDING` | The generated query includes opaque `cursor` and optional `limit`. The `200` has no schema. Member C needs to publish `{items, next_cursor}` with the inbox fields projected from `Escalation` and the trusted summary. The UI uses structured payee, masked account, integer amount, risk reasons, and expiry. Agent note text is separate. |
+| `POST /v1/customer/escalations/{id}/decision` | The request and the `403` and `409` error schemas are published. The `200` final and `202` processing bodies have no schemas. Member C needs to confirm the decision response fields and their relationship to Member A’s execution result. The UI reads returned approval `state` and nested `result.status`; a valid nested `result.audit_ref` is copyable only when execution is confirmed. |
+
+The provisional response fields are isolated in [approvalWire.ts](approvalWire.ts). Their sources are [Escalation](../../../contracts/escalation_models.py), [C's trusted summary builder](../../../gateway/escalation/summary.py), [C's route implementation](../../../gateway/escalation/routes.py), [ExecutionResult](../../../contracts/core_models.py#L165) and [AuditRef](../../../contracts/common.py#L66). The checked-in decision handler can report an outer `EXECUTED` after calling the execution port. The UI requires the nested execution outcome before presenting an execution receipt.
+
+### Receipt after HTTP 202
+
+The Customer inbox query supports only `status=PENDING`. Its refresh can show absence from the pending set. The two documented single-item reads, `GET /v1/escalations/{id}` and `GET /v1/actions/{request_id}`, require agent DPoP. The team plan §6.8 documents a Customer-filtered `GET /v1/customer/stream` notification with `event_type: bank.executed`, `request_id`, and `data.audit_ref`. It describes best-effort delivery and bounded replay. The OpenAPI stream entry supplies no event schema and the checked-out gateway does not mount a Customer stream. C and A need to publish a Customer-owned final-result and receipt read, or specify how a Customer can recover the receipt after missing the event. D03 retains the processing observation and limits refresh to the pending GET. It never resends a decision for status.

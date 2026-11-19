@@ -44,7 +44,10 @@ it.each([
   fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
   expect(await screen.findByRole("heading", { name: result })).toBeVisible();
-  if (role === "customer") expect(await screen.findByText("No mandates yet.")).toBeVisible();
+  if (role === "customer") {
+    expect(await screen.findByText("No mandates yet.")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeEnabled();
+  }
 });
 
 it("shows a configuration failure through src/main.tsx in real mode", async () => {

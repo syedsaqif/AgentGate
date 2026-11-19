@@ -1,4 +1,8 @@
-import { ApiError, errorFromResponse } from "./errors";
+import {
+  approvalPath, decisionPath, isApprovalPage, observeDecision,
+  type ApprovalQuery, type CustomerDecision, type DecisionPathParams, type DecisionRequest,
+} from "./approvalWire";
+import { ApiError, errorFromResponse, redactPin } from "./errors";
 import type { operations } from "./generated/openapi";
 import { isMandatePage, mandatePath, revokePath, type CreateMandateBody, type RevokePathParams } from "./mandateWire";
 import {
@@ -15,8 +19,9 @@ import type { ApiTransport, PathForMethod } from "./types";
 export type ShellApi = ReturnType<typeof createShellApi>;
 
 type ShellRequest =
-  | { path: Exclude<PathForMethod<"post">, typeof revokePath>; method: "POST" }
+  | { path: Exclude<PathForMethod<"post">, typeof revokePath | typeof decisionPath>; method: "POST" }
   | { path: typeof revokePath; method: "POST"; params: RevokePathParams }
+  | { path: typeof decisionPath; method: "POST"; params: DecisionPathParams }
   | { path: PathForMethod<"get">; method: "GET" };
 
 export function createShellApi(transport: ApiTransport) {
@@ -85,22 +90,37 @@ export function createShellApi(transport: ApiTransport) {
           body: JSON.stringify(body),
         }, 201 satisfies keyof operations["createMandate"]["responses"]);
       } catch (error) {
-        if (!(error instanceof ApiError) || !body.pin) throw error;
-        const pin = body.pin.trim();
-        const containsPin = (text?: string) => text !== undefined
-          && (text.includes(body.pin) || (pin !== "" && text.includes(pin)));
-        throw new ApiError(
-          containsPin(error.message) ? "The gateway rejected the mandate request." : error.message,
-          containsPin(error.code) ? "UI_REQUEST_FAILED" : error.code,
-          containsPin(error.requestId) ? undefined : error.requestId,
-          error.status,
-        );
+        throw redactPin(error, body.pin, "The gateway rejected the mandate request.");
       }
     },
     revokeMandate(token: string, id: string, signal: AbortSignal) {
       if (!id || id === "." || id === "..") throw new ApiError("The mandate identifier is invalid.", "UI_INVALID_RESPONSE");
       return mutate({ path: revokePath, method: "POST", params: { id } },
         authorized(token, signal), 200 satisfies keyof operations["revokeMandate"]["responses"]);
+    },
+    pendingApprovals(token: string, cursor: ApprovalQuery["cursor"], signal: AbortSignal) {
+      const query = new URLSearchParams({ status: "PENDING" } satisfies ApprovalQuery);
+      if (cursor != null) query.set("cursor", cursor);
+      return request({ path: approvalPath, method: "GET" },
+        authorized(token, signal), isApprovalPage, `?${query}`);
+    },
+    async decideApproval(token: string, id: string, choice: CustomerDecision, signal: AbortSignal) {
+      if (!id || id === "." || id === "..") throw new ApiError("The approval identifier is invalid.", "UI_INVALID_RESPONSE");
+      const body: DecisionRequest = choice.decision === "APPROVE"
+        ? { decision: "APPROVE", pin: choice.pin }
+        : choice.suspend_agent ? { decision: "REJECT", suspend_agent: true } : { decision: "REJECT" };
+      const auth = authorized(token, signal);
+      try {
+        const response = await send({ path: decisionPath, method: "POST", params: { id } }, {
+          ...auth, headers: { ...auth.headers, "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        const statuses = [200, 202] satisfies (keyof operations["decideEscalation"]["responses"])[];
+        if (!statuses.some((status) => status === response.status)) throw errorFromResponse(response, payload);
+        return observeDecision(payload, response.status, id);
+      } catch (error) {
+        throw redactPin(error, body.pin ?? undefined);
+      }
     },
   };
 }

@@ -121,3 +121,12 @@ small { display: block; }
 .mandate-record { border-top: 1px solid #cddbd3; padding-block: 0.75rem; }
 .mandate-usage dd { margin: 0; }
 .mandate-form code { overflow-wrap: anywhere; }
+
+.approval-inbox, .approval-results { margin-top: 1rem; }
+.approval-card h4, .approval-result h4 { margin-block: 0.8rem 0.3rem; }
+.approval-note { margin-block: 1rem; padding: 0.75rem; background: #f3f7f4; }
+.approval-note h4 { margin-top: 0; }
+.approval-note p { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-card input[type="password"] { max-width: 16rem; }
+.approval-result { padding-block: 0.5rem; border-top: 1px solid #cddbd3; }
+.approval-receipt pre { white-space: pre-wrap; overflow-wrap: anywhere; }

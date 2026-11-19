@@ -13,6 +13,19 @@ export class ApiError extends Error {
   }
 }
 
+export function redactPin(error: unknown, secret?: string, message = "The gateway rejected the request."): unknown {
+  if (!(error instanceof ApiError) || !secret) return error;
+  const pin = secret.trim();
+  const containsPin = (text?: string) => text !== undefined
+    && (text.includes(secret) || (pin !== "" && text.includes(pin)));
+  return new ApiError(
+    containsPin(error.message) ? message : error.message,
+    containsPin(error.code) ? "UI_REQUEST_FAILED" : error.code,
+    containsPin(error.requestId) ? undefined : error.requestId,
+    error.status,
+  );
+}
+
 export function errorFromResponse(response: Response, payload: unknown): ApiError {
   if (isErrorEnvelope(payload)) {
     const { message, code, request_id } = payload.error;

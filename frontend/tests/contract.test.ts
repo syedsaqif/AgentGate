@@ -1,6 +1,7 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import snapshot from "../../contracts/openapi.json";
+import { decisionPath } from "../src/api/approvalWire";
 import type { components } from "../src/api/generated/openapi";
 import { shellRoutes } from "../src/api/shellWire";
 import { demoIds } from "../src/mocks/fixtures";
@@ -62,4 +63,16 @@ describe("IC0 mock response conformance", () => {
       params: { missingProperty: "request_id" },
     }));
   });
+});
+
+it("accepts the three decision bodies and rejects replacement payment fields in the published schema", () => {
+  const { schema } = snapshot.paths[decisionPath].post.requestBody.content["application/json"];
+  const validate = ajv.compile({ $ref: `${snapshotId}${schema.$ref}` });
+  expect(validate({ decision: "APPROVE", pin: "fixture-value" })).toBe(true);
+  expect(validate({ decision: "REJECT" })).toBe(true);
+  expect(validate({ decision: "REJECT", suspend_agent: true })).toBe(true);
+  expect(validate({ decision: "REJECT", amount_paise: 100 })).toBe(false);
+  expect(validate.errors).toContainEqual(expect.objectContaining({
+    keyword: "additionalProperties", params: { additionalProperty: "amount_paise" },
+  }));
 });

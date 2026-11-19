@@ -1,5 +1,6 @@
 import type { ShellApi } from "../../api/client";
 import { RoleWorkspace } from "../../components/RoleWorkspace";
+import { ApprovalInbox } from "./ApprovalInbox";
 import { Mandates } from "./Mandates";
 import { maskedAccount } from "./mandateDraft";
 
@@ -31,6 +32,7 @@ export function CustomerPage({ api, demoId }: { api: ShellApi; demoId?: string }
             ) : <p>No agents available.</p>}
           </section>
         </div>
+        <ApprovalInbox api={api} token={session.session_token} endSession={endSession} />
         <Mandates api={api} bootstrap={data} token={session.session_token} endSession={endSession} />
       </>
     )} />
