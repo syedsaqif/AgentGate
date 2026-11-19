@@ -18,6 +18,7 @@ from contracts.core_models import (
     MandateSnapshot,
     MandateStatus,
     MandateTerms,
+    PolicyResult,
     UsageSnapshot,
 )
 from contracts.core_ports import MandateReader, UsageReader
@@ -32,6 +33,7 @@ from gateway.mandates.models import (
     CreateMandateResponse,
     CustomerMandateItem,
 )
+from gateway.mandates.policy import PolicyEvaluator
 from gateway.mandates.schema import MandateTable, MandateUsageTable
 
 
@@ -64,6 +66,11 @@ class MandateService(MandateReader, UsageReader):
         self.session_factory = session_factory
         self.signing_key = signing_key or Ed25519PrivateKey.generate()
         self.key_id = key_id
+        self.policy_evaluator = PolicyEvaluator()
+
+    def evaluate_policy(self, *args: Any, **kwargs: Any) -> PolicyResult:
+        """Pure synchronous policy evaluation conforming to PolicyEvaluator protocol."""
+        return self.policy_evaluator.evaluate(*args, **kwargs)
 
     async def create_mandate(
         self, customer_id: str, request: CreateMandateRequest

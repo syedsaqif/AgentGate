@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = deps.mandate_service
+        deps.policy_evaluator = deps.mandate_service.policy_evaluator
 
     yield
 
@@ -114,6 +115,7 @@ def create_app(
         )
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = deps.mandate_service
+        deps.policy_evaluator = deps.mandate_service.policy_evaluator
 
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
