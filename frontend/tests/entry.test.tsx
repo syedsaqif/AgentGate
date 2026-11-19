@@ -47,6 +47,8 @@ it.each([
   if (role === "customer") {
     expect(await screen.findByText("No mandates yet.")).toBeVisible();
     expect(await screen.findByRole("button", { name: "Approve" })).toBeEnabled();
+  } else {
+    expect(await screen.findByText("req_ops_demo_review")).toBeVisible();
   }
 });
 

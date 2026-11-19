@@ -6,6 +6,11 @@ import { ApiError, errorFromResponse, redactPin } from "./errors";
 import type { operations } from "./generated/openapi";
 import { isMandatePage, mandatePath, revokePath, type CreateMandateBody, type RevokePathParams } from "./mandateWire";
 import {
+  decodeOpsEvent, opsStreamPath, reinstateAgentPath, suspendAgentPath,
+  type AgentCursor, type AgentMutation, type OpsEvent, type ReinstateAgentParams, type SuspendAgentParams,
+} from "./opsWire";
+import { readSse } from "./sse";
+import {
   isCustomerBootstrap,
   isHumanSession,
   isRegisteredAgents,
@@ -19,9 +24,12 @@ import type { ApiTransport, PathForMethod } from "./types";
 export type ShellApi = ReturnType<typeof createShellApi>;
 
 type ShellRequest =
-  | { path: Exclude<PathForMethod<"post">, typeof revokePath | typeof decisionPath>; method: "POST" }
+  | { path: Exclude<PathForMethod<"post">, typeof revokePath | typeof decisionPath
+      | typeof suspendAgentPath | typeof reinstateAgentPath>; method: "POST" }
   | { path: typeof revokePath; method: "POST"; params: RevokePathParams }
   | { path: typeof decisionPath; method: "POST"; params: DecisionPathParams }
+  | { path: typeof suspendAgentPath; method: "POST"; params: SuspendAgentParams }
+  | { path: typeof reinstateAgentPath; method: "POST"; params: ReinstateAgentParams }
   | { path: PathForMethod<"get">; method: "GET" };
 
 export function createShellApi(transport: ApiTransport) {
@@ -72,9 +80,42 @@ export function createShellApi(transport: ApiTransport) {
       return request({ path: shellRoutes.customer.read, method: "GET" },
         authorized(token, signal), isCustomerBootstrap);
     },
-    registeredAgents(token: string, signal: AbortSignal) {
+    registeredAgents(token: string, signal: AbortSignal, cursor: AgentCursor = null) {
+      const query = cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
       return request({ path: shellRoutes.ops.read, method: "GET" },
-        authorized(token, signal), isRegisteredAgents);
+        authorized(token, signal), isRegisteredAgents, query);
+    },
+    updateAgent(token: string, id: string, action: AgentMutation, signal: AbortSignal) {
+      if (!id || id === "." || id === "..") throw new ApiError("The agent identifier is invalid.", "UI_INVALID_RESPONSE");
+      const path = action === "suspend" ? suspendAgentPath : reinstateAgentPath;
+      const status = 200 satisfies keyof operations["suspendAgent" | "reinstateAgent"]["responses"];
+      return mutate({ path, method: "POST", params: { id } }, authorized(token, signal), status);
+    },
+    async streamOps(token: string, lastEventId: string | undefined, signal: AbortSignal, handlers: {
+      opened: () => void; event: (event: OpsEvent) => void;
+    }) {
+      const auth = authorized(token, signal);
+      const headers = new Headers({ ...auth.headers, Accept: "text/event-stream" });
+      if (lastEventId) headers.set("Last-Event-ID", lastEventId);
+      const response = await send({ path: opsStreamPath, method: "GET" }, { ...auth, headers });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        throw errorFromResponse(response, payload);
+      }
+      if (!response.body || response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
+        void response.body?.cancel().catch(() => undefined);
+        throw new ApiError("The gateway did not return an Ops event stream.", "UI_INVALID_RESPONSE",
+          response.headers.get("X-Request-ID") ?? undefined);
+      }
+      if (signal.aborted) {
+        void response.body.cancel().catch(() => undefined);
+        return;
+      }
+      handlers.opened();
+      await readSse(response.body, signal, (frame) => {
+        const event = decodeOpsEvent(frame);
+        if (event) handlers.event(event);
+      });
     },
     customerMandates(token: string, cursor: string | null, signal: AbortSignal) {
       const query = cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;

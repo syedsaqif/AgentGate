@@ -130,3 +130,11 @@ small { display: block; }
 .approval-card input[type="password"] { max-width: 16rem; }
 .approval-result { padding-block: 0.5rem; border-top: 1px solid #cddbd3; }
 .approval-receipt pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.ops-panels { display: grid; gap: 1rem; }
+.ops-decisions { padding-left: 1.25rem; }
+.ops-decisions > li { border-top: 1px solid #cddbd3; padding-block: 0.5rem; }
+.ops-decision-details, .ops-agent-controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.ops-decision-details dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.ops-decision-details dt { font-weight: 700; }
+.ops-agent-actions { margin-top: 0.75rem; }

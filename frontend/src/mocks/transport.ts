@@ -3,13 +3,12 @@ import type { components } from "../api/generated/openapi";
 import type { ApiTransport } from "../api/types";
 import { createApprovalFixtures, isApprovalRoute, type ApprovalCases } from "./approvals";
 import { createMandateFixtures, isMandateRoute, type MockCustomer } from "./mandates";
+import { createOpsFixtures, isOpsRoute } from "./ops";
 import {
   customerBootstrap,
   demoCredentials,
   demoSessionTtlMs,
-  emptyAgents,
   emptyBootstrap,
-  registeredAgents,
 } from "./fixtures";
 
 type MockOptions = {
@@ -30,6 +29,7 @@ export function createMockTransport({
     .map((customer) => ({ ...customer, bootstrap: readScenario === "empty" ? emptyBootstrap : customer.bootstrap }));
   const mandates = createMandateFixtures(now);
   const approvals = createApprovalFixtures(now, approvalCases ?? (readScenario === "empty" ? [] : undefined));
+  const ops = createOpsFixtures(now, readScenario);
   let requestCount = 0;
 
   return {
@@ -47,6 +47,7 @@ export function createMockTransport({
 
       const mandateRoute = isMandateRoute(url.pathname);
       const approvalRoute = isApprovalRoute(url.pathname);
+      const opsRoute = isOpsRoute(url.pathname);
       const isCustomer = path === shellRoutes.customer.login || path === shellRoutes.customer.read || mandateRoute || approvalRoute;
       const role = isCustomer ? "customer" : "ops";
       if (init.method === "POST" && path === shellRoutes[role].login) {
@@ -74,7 +75,7 @@ export function createMockTransport({
         });
       }
 
-      if (!mandateRoute && !approvalRoute && (init.method !== "GET" || path !== shellRoutes[role].read)) {
+      if (!mandateRoute && !approvalRoute && !opsRoute && (init.method !== "GET" || path !== shellRoutes[role].read)) {
         return reject(400, "E_REQ_INVALID", "This request is outside the mock shell.");
       }
 
@@ -96,12 +97,14 @@ export function createMockTransport({
       if (approvalRoute && session.role === "customer") {
         return approvals(url, init, session.customer, { respond, reject });
       }
+      if (opsRoute && session.role === "ops") {
+        return ops(url, init, { respond, reject });
+      }
       if (readScenario === "unavailable") {
         return reject(503, "E_SERVICE_UNAVAILABLE", "The workspace data is temporarily unavailable.");
       }
-      return respond(session.role === "customer"
-        ? session.customer.bootstrap
-        : (readScenario === "empty" ? emptyAgents : registeredAgents));
+      return session.role === "customer" ? respond(session.customer.bootstrap)
+        : reject(400, "E_REQ_INVALID", "This request is outside the mock shell.");
     },
   };
 }

@@ -5,6 +5,7 @@ import { createShellApi } from "../src/api/client";
 import { createGatewayTransport } from "../src/api/gatewayTransport";
 import { approvalPath } from "../src/api/approvalWire";
 import { mandatePath } from "../src/api/mandateWire";
+import { opsStreamPath } from "../src/api/opsWire";
 import { shellRoutes, type Role } from "../src/api/shellWire";
 import { demoCredentials, demoIds, demoSessionTtlMs } from "../src/mocks/fixtures";
 import { createMockTransport } from "../src/mocks/transport";
@@ -41,7 +42,7 @@ describe("fixture-backed workspaces", () => {
     enterSecret(secretLabel, secret);
 
     expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
-    expect(screen.getByText("BillPal")).toBeVisible();
+    expect(await screen.findByText("BillPal")).toBeVisible();
     if (role === "customer") {
       expect(within(screen.getByRole("region", { name: "Your accounts" }))
         .getByText("Checking •••• 001")).toBeVisible();
@@ -56,7 +57,9 @@ describe("fixture-backed workspaces", () => {
     expect(request.mock.calls.map(([path, init]) => [path, init.method])).toEqual([
       [shellRoutes[role].login, "POST"],
       [shellRoutes[role].read, "GET"],
-      ...(role === "customer" ? [[`${approvalPath}?status=PENDING`, "GET"], [mandatePath, "GET"]] : []),
+      ...(role === "customer"
+        ? [[`${approvalPath}?status=PENDING`, "GET"], [mandatePath, "GET"]]
+        : [[opsStreamPath, "GET"]]),
     ]);
     const [login, read] = request.mock.calls.map(([, init]) => new Headers(init.headers));
     expect(login.get("Authorization")).toBeNull();
@@ -112,7 +115,10 @@ describe("fixture-backed workspaces", () => {
     expect(alert).toHaveTextContent("The workspace data is temporarily unavailable.");
     expect(alert).toHaveTextContent("E_SERVICE_UNAVAILABLE");
     expect(alert).toHaveTextContent("req_mock_2");
-    expect(screen.queryByRole("heading", { name: "Registered agents" })).not.toBeInTheDocument();
+    const registry = within(screen.getByRole("region", { name: "Registered agents" }));
+    expect(registry.queryByText("BillPal")).not.toBeInTheDocument();
+    expect(registry.getByRole("button", { name: "Retry agent refresh" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Live decision feed" })).toBeVisible();
   });
 
   it("shows loading and discards a protected read that finishes after logout", async () => {
