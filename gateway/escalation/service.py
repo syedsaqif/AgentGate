@@ -255,7 +255,7 @@ class PersistentEscalationService:
                 )
             )
             res = await session.execute(stmt)
-            if res.rowcount == 0:
+            if getattr(res, "rowcount", 0) == 0:
                 raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
             record = await session.get(EscalationRecord, str(escalation_id))
             assert record is not None
@@ -395,7 +395,7 @@ class PersistentEscalationService:
                 .values(state=EscalationState.EXECUTED.value)
             )
             res = await session.execute(stmt)
-            if res.rowcount == 0:
+            if getattr(res, "rowcount", 0) == 0:
                 raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
             record = await session.get(EscalationRecord, str(escalation_id))
             assert record is not None

@@ -84,3 +84,37 @@
 ## 7. Contract Questions & Integration Notes
 - **PIN & Lifecycle separation**: `contracts/escalation_ports.py` defines `EscalationService.decide(escalation_id, decision, subject_id, tx)`. To preserve clean separation of concerns, `HumanAuth.verify_pin(customer_id, pin)` is evaluated in the route handler prior to calling `decide()`. If wrong PIN is supplied, the escalation remains `PENDING`, an `auth.pin_failed` audit event is emitted, and HTTP 403 `E_ESC_BAD_PIN` is returned.
 - **Reject-and-suspend coordination**: If a customer selects `suspend_agent=true` on rejection, the route calls `Lifecycle.suspend_customer_delegation` to suspend that customer's delegation without affecting other customers.
+
+## 8. Scenario Runner Foundation & Scenarios S1-S4 (Task C07a)
+- **Deterministic Orchestration**:
+  - `simulator/runner.py`: CLI entry point supporting `python -m simulator.runner --all --profile scripted`.
+  - Clean state isolation: Each scenario begins with `reset_state()` (or `POST /v1/dev/reset` under scripted profile).
+  - Deterministic clock: Clock is injected across all scenarios without real sleeps.
+  - Zero rule coupling: No risk signal or policy rule inspects `scenario_id`.
+- **Four Verification Dimensions**:
+  Every scenario asserts all four dimensions directly without relying only on labels:
+  1. `HTTP responses`: Status codes, verdicts (`ALLOW`, `DENY`, `ESCALATE`), error reason codes, and audit references.
+  2. `Bank ledger`: Exact integer paise balances before and after operations.
+  3. `Mandate usage`: Committed paise, remaining paise, and lifetime budget assertions.
+  4. `Audit trail`: Required event sequence (`identity.verified`, `policy.evaluated`, `risk.scored`, `bank.executed` or `policy.denied`).
+- **Scenarios S1 through S4**:
+  - **S1 (Happy Path)**: ₹1,850 electricity payment to `BILL-ELEC`. Balance: 12,500,000 -> 12,315,000 paise. Mandate budget: 1,000,000 -> 815,000 remaining, 185,000 committed. Audit trail shows identity, policy, risk, and bank result.
+  - **S2a-c (Scope Denials)**:
+    - *S2a*: ₹7,000 payment denied by per-transaction cap (`E_POLICY_AMOUNT_EXCEEDS_CAP`).
+    - *S2b*: ₹1,850 payment to unlisted `BILL-MOBILE` denied (`E_POLICY_PAYEE_NOT_ALLOWED`).
+    - *S2c*: Unauthorized `TRANSFER` action type denied (`E_POLICY_ACTION_NOT_ALLOWED`).
+    - *Invariance*: Ledger balance (12,500,000 paise) and mandate usage (0 committed, 1,000,000 remaining) unchanged across all denials. Zero bank contact.
+  - **S3 (High-Concurrency Race)**:
+    - Budget: 400,000 paise, per-transaction cap: 200,000 paise.
+    - Five parallel 150,000 paise requests with unique idempotency keys.
+    - Exactly two execute (spending 300,000 paise), and three fail with `E_BANK_INSUFFICIENT_FUNDS`.
+    - Repeated and verified across 100 randomized iterations.
+  - **S4 (Mandate Expiry & Temporal Boundaries)**:
+    - 90-second mandate validity window ($T_0$ to $T_0 + 90s$).
+    - $T_0 - 10s$: Premature action denied with `E_MANDATE_REVOKED` (not yet valid).
+    - $T_0 + 30s$: Active action succeeds (`ALLOW` / `EXECUTED`).
+    - $T_0 + 90s$: Boundary action evaluated at exact deadline.
+    - $T_0 + 91s$: Expired action denied with `E_MANDATE_REVOKED`.
+- **Provider Validation & Staged Execution**:
+  - Phase 1 runs against `FixtureScenarioClient` to debug orchestration logic.
+  - Phase 2 inspects runtime providers against the active profile (`scripted` / `real`). If any provider is a fake or missing (e.g. `agent_sdk.client` placeholder, `FakeBank`), the runner explicitly reports which provider is a fake and marks real-stack scenarios as skipped pending Member A and B deliverables.

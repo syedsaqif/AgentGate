@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from contracts.audit_models import AuditRef
+from contracts.common import AuditRef
 from contracts.core_models import CanonicalAction, ExecutionResult
 from contracts.escalation_models import Escalation, EscalationState
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contracts.core_models import ActionType
+from contracts.common import ActionType
 from contracts.risk_models import RiskInput, RiskSignal
 
 
