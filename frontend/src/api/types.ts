@@ -1,12 +1,11 @@
-export const CONTRACT_VERSION = "1.0.0" as const;
+import type { paths } from "./generated/openapi";
 
-export type ErrorEnvelope = {
-  error: { code: string; message: string; request_id: string };
-};
+export { CONTRACT_VERSION } from "./generated/openapi";
 
-export type Page<T> = { items: T[]; next_cursor: string | null };
+export type PathForMethod<Method extends "get" | "post"> = {
+  [Path in keyof paths]: Method extends keyof paths[Path] ? Path : never;
+}[keyof paths];
 
 export interface ApiTransport {
-  request<T>(method: string, path: string, body?: unknown): Promise<T>;
-  subscribe(path: string, onEvent: (event: unknown) => void): () => void;
+  request(path: string, init: RequestInit): Promise<Response>;
 }
