@@ -1,6 +1,7 @@
 import { isRecord, shellRoutes, type Role } from "../api/shellWire";
 import type { components } from "../api/generated/openapi";
 import type { ApiTransport } from "../api/types";
+import { createMandateFixtures, isMandateRoute, type MockCustomer } from "./mandates";
 import {
   customerBootstrap,
   demoCredentials,
@@ -13,17 +14,25 @@ import {
 type MockOptions = {
   readScenario?: "populated" | "empty" | "unavailable";
   now?: () => number;
+  additionalCustomers?: readonly MockCustomer[];
 };
 
-type MockSession = { role: Role; expiresAt: number };
+type MockSession = { role: "customer"; customer: MockCustomer; expiresAt: number }
+  | { role: "ops"; expiresAt: number };
 
-export function createMockTransport({ readScenario = "populated", now = Date.now }: MockOptions = {}): ApiTransport {
+export function createMockTransport({
+  readScenario = "populated", now = Date.now, additionalCustomers = [],
+}: MockOptions = {}): ApiTransport {
   const sessions = new Map<string, MockSession>();
+  const customers = [{ ...demoCredentials.customer, bootstrap: customerBootstrap }, ...additionalCustomers]
+    .map((customer) => ({ ...customer, bootstrap: readScenario === "empty" ? emptyBootstrap : customer.bootstrap }));
+  const mandates = createMandateFixtures(now);
   let requestCount = 0;
 
   return {
     async request(path, init) {
       init.signal?.throwIfAborted();
+      const url = new URL(path, "http://mock.invalid");
       const requestId = `req_mock_${++requestCount}`;
       const respond = (payload: unknown, status = 200) => Response.json(payload, {
         status,
@@ -33,13 +42,15 @@ export function createMockTransport({ readScenario = "populated", now = Date.now
         error: { code, message, request_id: requestId },
       } satisfies components["schemas"]["ErrorEnvelope"], status);
 
-      const isCustomer = path === shellRoutes.customer.login || path === shellRoutes.customer.read;
+      const mandateRoute = isMandateRoute(url.pathname);
+      const isCustomer = path === shellRoutes.customer.login || path === shellRoutes.customer.read || mandateRoute;
       const role = isCustomer ? "customer" : "ops";
       if (init.method === "POST" && path === shellRoutes[role].login) {
         const credentials = readCredentials(init.body, role);
         if (!credentials) return reject(400, "E_REQ_INVALID", "Request validation failed.");
-        const seed = demoCredentials[role];
-        if (credentials.id !== seed.id || credentials.secret !== seed.secret) {
+        const customer = role === "customer" ? customers.find((seed) => seed.id === credentials.id) : undefined;
+        const seed = role === "customer" ? customer : demoCredentials.ops;
+        if (!seed || credentials.id !== seed.id || credentials.secret !== seed.secret) {
           return reject(401, "E_AUTH_INVALID_TOKEN", "Invalid sign-in credentials.");
         }
 
@@ -49,7 +60,7 @@ export function createMockTransport({ readScenario = "populated", now = Date.now
         }
         const token = crypto.randomUUID();
         const expiresAt = timestamp + demoSessionTtlMs;
-        sessions.set(token, { role, expiresAt });
+        sessions.set(token, customer ? { role: "customer", customer, expiresAt } : { role: "ops", expiresAt });
         return respond({
           session_token: token,
           session_id: crypto.randomUUID(),
@@ -59,7 +70,7 @@ export function createMockTransport({ readScenario = "populated", now = Date.now
         });
       }
 
-      if (init.method !== "GET" || path !== shellRoutes[role].read) {
+      if (!mandateRoute && (init.method !== "GET" || path !== shellRoutes[role].read)) {
         return reject(400, "E_REQ_INVALID", "This request is outside the mock shell.");
       }
 
@@ -75,11 +86,14 @@ export function createMockTransport({ readScenario = "populated", now = Date.now
         return reject(401, "E_AUTH_EXPIRED", "Your session has expired. Sign in again.");
       }
 
+      if (mandateRoute && session.role === "customer") {
+        return mandates(url, init, session.customer, { respond, reject });
+      }
       if (readScenario === "unavailable") {
         return reject(503, "E_SERVICE_UNAVAILABLE", "The workspace data is temporarily unavailable.");
       }
-      return respond(role === "customer"
-        ? (readScenario === "empty" ? emptyBootstrap : customerBootstrap)
+      return respond(session.role === "customer"
+        ? session.customer.bootstrap
         : (readScenario === "empty" ? emptyAgents : registeredAgents));
     },
   };

@@ -9,7 +9,7 @@ type WorkspaceProps<T> = {
   api: ShellApi;
   demoId?: string;
   read: (token: string, signal: AbortSignal) => Promise<T>;
-  renderData: (data: T) => ReactNode;
+  renderData: (data: T, session: HumanSession, clearSession: (error?: ApiError) => void) => ReactNode;
 };
 
 type View<T> =
@@ -113,7 +113,7 @@ export function RoleWorkspace<T>({ role, api, demoId, read, renderData }: Worksp
         </div>
         {view.kind === "loading" && <p className="panel" role="status">Loading workspace…</p>}
         {view.kind === "readError" && <ErrorNotice error={view.error} />}
-        {view.kind === "ready" && renderData(view.data)}
+        {view.kind === "ready" && renderData(view.data, view.session, clearSession)}
       </>
     );
   }

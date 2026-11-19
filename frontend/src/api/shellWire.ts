@@ -12,7 +12,8 @@ export type HumanSession = { session_token: string; role: Role; expires_at: stri
 type AccountCard = { account_id: string; masked_label: string };
 type PayeeCard = { payee_id: string; display_name: string };
 type AgentCard = { agent_id: string; name: string; vendor: string };
-export type CustomerBootstrap = { accounts: AccountCard[]; payees: PayeeCard[]; agents: AgentCard[] };
+type DelegableAgent = AgentCard & { jkt?: string | null; max_scopes?: string[] };
+export type CustomerBootstrap = { accounts: AccountCard[]; payees: PayeeCard[]; agents: DelegableAgent[] };
 
 // Member B — GET /v1/ops/agents. IC0 omits the JSON 200 schema.
 type AgentStatus = "ACTIVE" | "SUSPENDED" | "DISABLED";
@@ -49,7 +50,12 @@ export function isCustomerBootstrap(value: unknown): value is CustomerBootstrap 
   return isRecord(value)
     && hasCards(value.accounts, ["account_id", "masked_label"])
     && hasCards(value.payees, ["payee_id", "display_name"])
-    && hasCards(value.agents, ["agent_id", "name", "vendor"]);
+    && Array.isArray(value.agents)
+    && value.agents.every((agent) => isRecord(agent)
+      && hasStrings(agent, ["agent_id", "name", "vendor"])
+      && (agent.jkt == null || typeof agent.jkt === "string")
+      && (agent.max_scopes === undefined || (Array.isArray(agent.max_scopes)
+        && agent.max_scopes.every((scope: unknown) => typeof scope === "string"))));
 }
 
 export function isRegisteredAgents(value: unknown): value is RegisteredAgents {

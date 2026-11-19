@@ -14,7 +14,11 @@ const billPal = { agent_id: "agt_billpal", name: "BillPal", vendor: "BillPal Dem
 export const customerBootstrap: CustomerBootstrap = {
   accounts: [{ account_id: "ACC-001", masked_label: "Checking •••• 001" }],
   payees: [{ payee_id: "BILL-ELEC", display_name: "Electricity Board" }],
-  agents: [billPal],
+  agents: [{
+    ...billPal,
+    jkt: "fixture-billpal-key-fingerprint",
+    max_scopes: ["bill_pay", "balance_read", "transactions_read"],
+  }],
 };
 
 export const registeredAgents: RegisteredAgents = {

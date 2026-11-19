@@ -7,7 +7,7 @@ const inr = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
 });
 
-export function parseMandateCapPaise(input: string): ValidationResult<number> {
+export function parseRupeePaise(input: string): ValidationResult<number> {
   const amount = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
   if (!amount) {
     return { ok: false, error: "Enter a rupee amount with up to two decimal places, such as 1850.50." };
@@ -17,10 +17,15 @@ export function parseMandateCapPaise(input: string): ValidationResult<number> {
   if (!Number.isSafeInteger(paise)) {
     return { ok: false, error: "This amount exceeds the supported paise range." };
   }
-  if (paise === 0) {
+  return { ok: true, value: paise };
+}
+
+export function parseMandateCapPaise(input: string): ValidationResult<number> {
+  const amount = parseRupeePaise(input);
+  if (amount.ok && amount.value === 0) {
     return { ok: false, error: "Enter a cap greater than zero." };
   }
-  return { ok: true, value: paise };
+  return amount;
 }
 
 export function formatInrPaise(paise: number): string {

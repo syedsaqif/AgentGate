@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { createShellApi } from "../src/api/client";
 import { createGatewayTransport } from "../src/api/gatewayTransport";
+import { mandatePath } from "../src/api/mandateWire";
 import { shellRoutes, type Role } from "../src/api/shellWire";
 import { demoCredentials, demoIds, demoSessionTtlMs } from "../src/mocks/fixtures";
 import { createMockTransport } from "../src/mocks/transport";
@@ -41,10 +42,12 @@ describe("fixture-backed workspaces", () => {
     expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
     expect(screen.getByText("BillPal")).toBeVisible();
     if (role === "customer") {
-      expect(screen.getByText("Checking •••• 001")).toBeVisible();
+      expect(within(screen.getByRole("region", { name: "Your accounts" }))
+        .getByText("Checking •••• 001")).toBeVisible();
       expect(screen.queryByText(/ACC-001/)).not.toBeInTheDocument();
       expect(screen.getByText("Electricity Board")).toBeVisible();
       expect(screen.queryByText("Budget Assistant")).not.toBeInTheDocument();
+      expect(await screen.findByText("No mandates yet.")).toBeVisible();
     } else {
       const row = within(screen.getByText("Budget Assistant").closest("li")!);
       expect(row.getByText("SUSPENDED")).toBeVisible();
@@ -52,6 +55,7 @@ describe("fixture-backed workspaces", () => {
     expect(request.mock.calls.map(([path, init]) => [path, init.method])).toEqual([
       [shellRoutes[role].login, "POST"],
       [shellRoutes[role].read, "GET"],
+      ...(role === "customer" ? [[mandatePath, "GET"]] : []),
     ]);
     const [login, read] = request.mock.calls.map(([, init]) => new Headers(init.headers));
     expect(login.get("Authorization")).toBeNull();
