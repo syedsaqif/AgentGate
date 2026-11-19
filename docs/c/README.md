@@ -118,3 +118,52 @@
 - **Provider Validation & Staged Execution**:
   - Phase 1 runs against `FixtureScenarioClient` to debug orchestration logic.
   - Phase 2 inspects runtime providers against the active profile (`scripted` / `real`). If any provider is a fake or missing (e.g. `agent_sdk.client` placeholder, `FakeBank`), the runner explicitly reports which provider is a fake and marks real-stack scenarios as skipped pending Member A and B deliverables.
+
+## 9. Advanced Security & Attack Scenarios S5-S8 & S2d (Task C07b)
+- **S2d (Probing & Rapid Denials)**:
+  - 5 hard policy denials within 10 minutes trigger circuit breaker suspension at or before the 5th attempt.
+  - The subsequent protected action fails immediately (`E_AUTH_AGENT_SUSPENDED` / `E_RISK_BREAKER_OPEN`).
+  - Audit trail explains denial history and breaker trip event.
+- **S5 (Mandate Revocation & Approval Cancellation)**:
+  - Revocation acknowledgement returned only after status `REVOKED`, tokens, and pending approvals are cancelled in one atomic unit.
+  - Subsequent requests under revoked mandate fail immediately (`E_MANDATE_REVOKED`).
+  - Cancelled approvals cannot be approved or dispatched; zero bank operations.
+- **S6 (Identity & Cryptographic Vectors - Member C drives, B owns checks)**:
+  - Validates authentication error vectors aligned with `contracts/fixtures/b/auth_audit_cases.json`:
+    - Missing credentials (`E_AUTH_MISSING`, 401)
+    - Replayed proof (`E_AUTH_REPLAY`, 401)
+    - Key mismatch (`E_AUTH_KEY_MISMATCH`, 401)
+    - Suspended agent (`E_AUTH_AGENT_SUSPENDED`, 403)
+    - Unknown agent (`E_AUTH_INVALID_TOKEN`, 401)
+    - Mandate binding mismatch (`E_AUTH_AGENT_MANDATE_MISMATCH`, 403)
+    - Expired token (`E_AUTH_EXPIRED`, 401)
+    - Tampered signature body (`E_AUTH_PROOF_INVALID`, 401)
+    - Agent calling human customer routes (`E_AUTH_AGENT_SUSPENDED`, 403)
+- **S7 (Prompt Injection & Malicious Redirection)**:
+  - Scripted invoice attempts to redirect ₹40,000 to unverified `PAYEE-X`.
+  - Fires `intent_mismatch`, `new_payee`, and `amount_outlier` signals.
+  - Trips circuit breaker in HIGH band (`breaker_recommended=True`), globally suspending rogue agent.
+  - Zero money moves; balance and usage remain intact.
+- **S8 (Structuring & Velocity Breaker Trip)**:
+  - Six ₹1,990 attempts spaced ~20s apart:
+    - Attempt 1: LOW band (`ALLOW`) -> executes.
+    - Attempts 2 & 3: MEDIUM band (`ESCALATE`) -> step-up approval pending.
+    - Attempt 4: HIGH band (`DENY`) -> trips circuit breaker, suspending agent.
+    - Breaker cancellation: Pending approvals for attempts 2 & 3 are cancelled.
+    - Attempts 5 & 6: Denied immediately (agent suspended).
+  - Assertions test risk bands and payment counts (at most one payment executes), not fragile exact scores.
+
+## 10. Human-in-the-Loop Approvals & Evidence Scenarios S9-S11 (Task C07c)
+- **S9a-e (Approval Lifecycle Variants)**:
+  - *S9a (Approve)*: ₹4,800 step-up approved with customer PIN `4821`; stored action executes once; receipt returned.
+  - *S9b (Reject)*: Customer rejects action; terminal status `REJECTED`; zero bank execution.
+  - *S9c (Expire)*: Advance clock past 300s TTL; sweeper moves record to `EXPIRED`; zero bank execution.
+  - *S9d (Reuse & Race)*: Duplicate approval returns `E_ESC_ALREADY_CONSUMED` (409); simultaneous approvals produce exactly one winner.
+  - *S9e (PIN & Spam)*: Invalid PIN returns `E_ESC_BAD_PIN` (403), audits failure, leaves record pending; 4th pending creation on same mandate returns `E_ESC_LIMIT_REACHED` (409).
+- **S10 (Audit Log Integrity & Tamper Verification)**:
+  - Drives `client.verify_audit(session_token)`.
+  - Verifies that genuine audit log validates with `valid == True`.
+  - Tampered/modified audit block is detected by hash chain verification, returning `valid == False`.
+- **S11 (Cryptographic Dispute Evidence Bundle)**:
+  - Shared deliverable: Member C drives, Member B builds bundle, Member D renders views.
+  - Asserts full JSON bundle: historical mandate terms & hash, public agent identity, cryptographic proof metadata, risk scoring diagnostics, approval metadata, and bank receipt.

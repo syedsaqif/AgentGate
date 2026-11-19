@@ -1,4 +1,4 @@
-"""Integration tests driving scenarios S1-S4 and verifying 4-dimension assertions."""
+"""Integration tests driving scenarios S1-S11 and verifying 4-dimension assertions."""
 
 from __future__ import annotations
 
@@ -6,9 +6,23 @@ import pytest
 
 from simulator.client_port import FixtureScenarioClient
 from simulator.scenarios.s01 import run_s01
-from simulator.scenarios.s02 import run_s02, run_s02a, run_s02b, run_s02c
+from simulator.scenarios.s02 import run_s02, run_s02a, run_s02b, run_s02c, run_s02d
 from simulator.scenarios.s03 import run_s03
 from simulator.scenarios.s04 import run_s04
+from simulator.scenarios.s05 import run_s05
+from simulator.scenarios.s06 import run_s06
+from simulator.scenarios.s07 import run_s07
+from simulator.scenarios.s08 import run_s08
+from simulator.scenarios.s09 import (
+    run_s09,
+    run_s09a,
+    run_s09b,
+    run_s09c,
+    run_s09d,
+    run_s09e,
+)
+from simulator.scenarios.s10 import run_s10
+from simulator.scenarios.s11 import run_s11
 
 pytestmark = pytest.mark.integration
 
@@ -64,9 +78,19 @@ async def test_scenario_s02_scope_denials() -> None:
     assert res_c.audit_verified
     assert res_c.details["error_code"] == "E_POLICY_ACTION_NOT_ALLOWED"
 
+    # S2d: Probing 5 denials within 10 minutes trip breaker & suspend agent
+    res_d = await run_s02d(client)
+    assert res_d.passed, res_d.message
+    assert res_d.http_verified
+    assert res_d.ledger_verified
+    assert res_d.usage_verified
+    assert res_d.audit_verified
+    assert res_d.details["has_breaker"] is True
+    assert res_d.details["has_suspension"] is True
+
     # Batch driver verification
     all_s2 = await run_s02(client)
-    assert len(all_s2) == 3
+    assert len(all_s2) == 4
     assert all(r.passed for r in all_s2)
 
 
@@ -96,10 +120,141 @@ async def test_scenario_s04_expiry_and_boundaries() -> None:
     assert result.ledger_verified
     assert result.usage_verified
     assert result.audit_verified
-    # Two valid actions (active + boundary) debited 185,000 paise each:
     assert result.details["post_balance"] == 12_500_000 - (2 * 185_000)
     assert result.details["committed_paise"] == 2 * 185_000
     assert result.details["remaining_paise"] == 1_000_000 - (2 * 185_000)
+
+
+@pytest.mark.asyncio
+async def test_scenario_s05_revocation() -> None:
+    """Scenario S5: Revocation cancels pending approvals and blocks subsequent actions."""
+    client = FixtureScenarioClient()
+    result = await run_s05(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    assert result.details["escalation_state_after_revoke"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_scenario_s06_identity_vectors() -> None:
+    """Scenario S6: Drives missing, replayed, wrong-key, suspended, and binding failure vectors."""
+    client = FixtureScenarioClient()
+    result = await run_s06(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    assert all(v["passed"] for v in result.details["vector_results"])
+
+
+@pytest.mark.asyncio
+async def test_scenario_s07_prompt_injection() -> None:
+    """Scenario S7: Poisoned bill to unverified payee trips breaker in HIGH band; suspends agent."""
+    client = FixtureScenarioClient()
+    result = await run_s07(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    assert result.details["response"]["risk"]["level"] == "HIGH"
+    assert result.details["response"]["risk"]["breaker_recommended"] is True
+    assert result.details["subsequent_blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_scenario_s08_structuring() -> None:
+    """Scenario S8: Rapid attempts escalate LOW -> MEDIUM -> HIGH; breaker suspends agent."""
+    client = FixtureScenarioClient()
+    result = await run_s08(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    assert result.details["pending_cancelled"] is True
+    # At most 1 payment executed
+    assert result.details["attempts"][0]["ok"] is True
+    assert result.details["attempts"][3]["res"]["risk"]["level"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_scenario_s09_approval_lifecycle() -> None:
+    """Scenario S9: Human-in-the-loop approval variants (S9a-S9e)."""
+    client = FixtureScenarioClient()
+
+    # S9a: Valid PIN approval and execution receipt
+    res_a = await run_s09a(client)
+    assert res_a.passed, res_a.message
+    assert res_a.details["decide_response"]["receipt"]["status"] == "EXECUTED"
+
+    # S9b: Customer rejection
+    res_b = await run_s09b(client)
+    assert res_b.passed, res_b.message
+    assert res_b.details["decide_response"]["state"] == "REJECTED"
+
+    # S9c: Expiration sweeper
+    res_c = await run_s09c(client)
+    assert res_c.passed, res_c.message
+    assert res_c.details["final_state"] == "EXPIRED"
+
+    # S9d: Duplicate approval & race single winner
+    res_d = await run_s09d(client)
+    assert res_d.passed, res_d.message
+
+    # S9e: Bad PIN & 3-pending cap limit
+    res_e = await run_s09e(client)
+    assert res_e.passed, res_e.message
+    assert res_e.details["bad_pin_res"]["error"]["code"] == "E_ESC_BAD_PIN"
+    assert res_e.details["limit_res"]["error"]["code"] == "E_ESC_LIMIT_REACHED"
+
+    # Batch driver verification
+    all_s9 = await run_s09(client)
+    assert len(all_s9) == 5
+    assert all(r.passed for r in all_s9)
+
+
+@pytest.mark.asyncio
+async def test_scenario_s10_audit_tamper() -> None:
+    """Scenario S10: Untampered audit validates; tampered audit fails verification."""
+    client = FixtureScenarioClient()
+    result = await run_s10(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    assert result.details["verify_clean"]["valid"] is True
+    assert result.details["verify_tampered"]["valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_scenario_s11_evidence_bundle() -> None:
+    """Scenario S11: Cryptographic dispute evidence bundle contains all required components."""
+    client = FixtureScenarioClient()
+    result = await run_s11(client)
+
+    assert result.passed, result.message
+    assert result.http_verified
+    assert result.ledger_verified
+    assert result.usage_verified
+    assert result.audit_verified
+    b = result.details["evidence_bundle"]
+    assert "mandate" in b
+    assert "agent_identity" in b
+    assert "proof_evidence" in b
+    assert "risk_assessment" in b
+    assert "bank_result" in b
+    assert "bundle_sig" in b
 
 
 @pytest.mark.skip(

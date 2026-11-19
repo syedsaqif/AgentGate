@@ -16,9 +16,23 @@ from datetime import UTC, datetime
 
 from simulator.client_port import FixtureScenarioClient, ScenarioClient, ScenarioResult
 from simulator.scenarios.s01 import run_s01
-from simulator.scenarios.s02 import run_s02, run_s02a, run_s02b, run_s02c
+from simulator.scenarios.s02 import run_s02, run_s02a, run_s02b, run_s02c, run_s02d
 from simulator.scenarios.s03 import run_s03
 from simulator.scenarios.s04 import run_s04
+from simulator.scenarios.s05 import run_s05
+from simulator.scenarios.s06 import run_s06
+from simulator.scenarios.s07 import run_s07
+from simulator.scenarios.s08 import run_s08
+from simulator.scenarios.s09 import (
+    run_s09,
+    run_s09a,
+    run_s09b,
+    run_s09c,
+    run_s09d,
+    run_s09e,
+)
+from simulator.scenarios.s10 import run_s10
+from simulator.scenarios.s11 import run_s11
 
 
 def check_real_providers(profile: str = "scripted") -> tuple[bool, list[str]]:
@@ -41,7 +55,6 @@ def check_real_providers(profile: str = "scripted") -> tuple[bool, list[str]]:
         from gateway.config import AgentGateConfig
         from gateway.deps import build_dependencies, is_fake_provider
 
-        # Attempt to load dependencies for given profile
         cfg = AgentGateConfig.load(profile=profile)
         deps = build_dependencies(config=cfg)
 
@@ -92,10 +105,37 @@ async def run_orchestration(
             results.append(await run_s02b(client, now=clock_now))
         elif sc_lower in ("s02c", "s2c"):
             results.append(await run_s02c(client, now=clock_now))
+        elif sc_lower in ("s02d", "s2d"):
+            results.append(await run_s02d(client, now=clock_now))
         if sc_lower in ("s03", "s3", "all"):
             results.append(await run_s03(client, runs=s3_runs, now=clock_now))
         if sc_lower in ("s04", "s4", "all"):
             results.append(await run_s04(client, base_time=clock_now))
+        if sc_lower in ("s05", "s5", "all"):
+            results.append(await run_s05(client, now=clock_now))
+        if sc_lower in ("s06", "s6", "all"):
+            results.append(await run_s06(client, now=clock_now))
+        if sc_lower in ("s07", "s7", "all"):
+            results.append(await run_s07(client, now=clock_now))
+        if sc_lower in ("s08", "s8", "all"):
+            results.append(await run_s08(client, now=clock_now))
+        if sc_lower in ("s09", "s9", "all"):
+            s9_res = await run_s09(client, now=clock_now)
+            results.extend(s9_res)
+        elif sc_lower in ("s09a", "s9a"):
+            results.append(await run_s09a(client, now=clock_now))
+        elif sc_lower in ("s09b", "s9b"):
+            results.append(await run_s09b(client, now=clock_now))
+        elif sc_lower in ("s09c", "s9c"):
+            results.append(await run_s09c(client, now=clock_now))
+        elif sc_lower in ("s09d", "s9d"):
+            results.append(await run_s09d(client, now=clock_now))
+        elif sc_lower in ("s09e", "s9e"):
+            results.append(await run_s09e(client, now=clock_now))
+        if sc_lower in ("s10", "s10", "all"):
+            results.append(await run_s10(client, now=clock_now))
+        if sc_lower in ("s11", "s11", "all"):
+            results.append(await run_s11(client, now=clock_now))
 
     return results
 
@@ -161,9 +201,7 @@ async def main_async(args: argparse.Namespace) -> int:
     scenarios = ["all"] if args.all or not args.scenario else [args.scenario]
     clock_now = datetime(2026, 11, 19, 10, 0, 0, tzinfo=UTC)
 
-    # -------------------------------------------------------------------------
     # Stage 1: Run against FixtureScenarioClient to debug orchestration
-    # -------------------------------------------------------------------------
     print("\n--- Stage 1: Running Scenarios against FixtureScenarioClient ---")
     fixture_client = FixtureScenarioClient()
     fixture_results = await run_orchestration(
@@ -179,9 +217,7 @@ async def main_async(args: argparse.Namespace) -> int:
         print("[FAIL] Orchestration debugging failed on FixtureScenarioClient.")
         return 1
 
-    # -------------------------------------------------------------------------
     # Stage 2: Validate Real SDK & Gateway Providers
-    # -------------------------------------------------------------------------
     print("--- Stage 2: Validating Real Providers & SDK Availability ---")
     has_fakes, fake_list = check_real_providers(profile=args.profile)
 
@@ -207,13 +243,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all implemented scenarios (S1-S4)",
+        help="Run all implemented scenarios (S1-S11)",
     )
     parser.add_argument(
         "--scenario",
         type=str,
         default=None,
-        help="Run specific scenario by name (e.g., s01, s02, s03, s04)",
+        help="Run specific scenario by name (e.g., s01, s02, s03... s11)",
     )
     parser.add_argument(
         "--profile",
