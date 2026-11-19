@@ -312,12 +312,11 @@ def create_escalation_router(
             body.decision == EscalationDecision.APPROVE
             and execution_port is not None
         ):
-            # Claim execution atomically
             try:
-                await service.claim_execution(
+                exec_res = await service.execute_approved(
                     escalation_id=id,
-                    expected_hash=str(esc.action_hash),
                     tx=tx,
+                    execution_port=execution_port,
                 )
             except ValueError as e:
                 code_str = str(e)
@@ -328,14 +327,10 @@ def create_escalation_router(
                 )
                 raise AgentGateError(
                     code=code_str,
-                    message=f"Execution claim failed: {code_str}",
+                    message=f"Execution failed: {code_str}",
                     status_code=http_status,
                 ) from e
 
-            exec_res = await execution_port.execute_stored(
-                request_id=str(esc.request_id),
-                escalation_id=id,
-            )
             return {
                 "escalation_id": id,
                 "request_id": str(esc.request_id),

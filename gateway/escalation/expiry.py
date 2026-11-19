@@ -25,7 +25,8 @@ async def expire_due_in_session(session: AsyncSession, now: datetime) -> int:
         .values(state=EscalationState.EXPIRED.value)
     )
     res = await session.execute(stmt)
-    return res.rowcount  # type: ignore[no-any-return]
+    rowcount: int = getattr(res, "rowcount", 0)
+    return rowcount
 
 
 __all__ = ["expire_due_in_session"]
