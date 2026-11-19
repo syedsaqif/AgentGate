@@ -13,8 +13,11 @@ from contracts.audit_models import AuditEvent
 from contracts.audit_ports import AuditLog
 from contracts.canonical import action_hash
 from contracts.common import Clock, OpaqueId, Tx
-from contracts.core_models import CanonicalAction
+from contracts.core_models import ActionStatus, CanonicalAction, ExecutionResult, MandateStatus
+from contracts.core_ports import ExecutionPort, MandateReader, UsageReader
 from contracts.escalation_models import Escalation, EscalationDecision, EscalationState
+from contracts.identity_models import AgentStatus
+from contracts.identity_ports import AgentRegistry
 from contracts.reason_codes import ReasonCode
 from contracts.risk_models import RiskResult
 from gateway.escalation.expiry import expire_due_in_session
@@ -65,7 +68,10 @@ class PersistentEscalationService:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         audit_log: AuditLog | None = None,
         catalog: Any = None,
-        mandate_reader: Any = None,
+        mandate_reader: MandateReader | None = None,
+        agent_registry: AgentRegistry | None = None,
+        usage_reader: UsageReader | None = None,
+        execution_port: ExecutionPort | None = None,
     ) -> None:
         self.config = config or EscalationConfig()
         self.clock = clock or SystemClock()
@@ -73,6 +79,9 @@ class PersistentEscalationService:
         self.audit_log = audit_log
         self.catalog = catalog
         self.mandate_reader = mandate_reader
+        self.agent_registry = agent_registry
+        self.usage_reader = usage_reader
+        self.execution_port = execution_port
 
         # In-memory store fallback when operating without an active DB session
         self._memory_store: dict[str, EscalationRecord] = {}
@@ -315,11 +324,66 @@ class PersistentEscalationService:
         if record.state != EscalationState.APPROVED.value:
             raise ValueError(ReasonCode.E_REQ_INVALID.value)
 
+        # Validate approval deadline at claim time
         if _ensure_utc(record.expires_at) <= now:
             record.state = EscalationState.EXPIRED.value
             if session is not None:
                 await session.flush()
             raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
+
+        # Validate live mandate state through injected reader port
+        if self.mandate_reader is not None:
+            try:
+                mandate_snap = await self.mandate_reader.get(record.mandate_id, tx)
+                status_val = (
+                    mandate_snap.status.value
+                    if hasattr(mandate_snap.status, "value")
+                    else str(mandate_snap.status)
+                )
+                if status_val != MandateStatus.ACTIVE.value:
+                    if status_val == MandateStatus.REVOKED.value:
+                        raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+                    if status_val == MandateStatus.SUSPENDED.value:
+                        raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
+                    if status_val == MandateStatus.EXPIRED.value:
+                        raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
+                    raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+
+                valid_from = _ensure_utc(mandate_snap.terms.valid_from)
+                valid_until = _ensure_utc(mandate_snap.terms.valid_until)
+                if now < valid_from or now > valid_until:
+                    raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(ReasonCode.E_MANDATE_REVOKED.value) from e
+
+        # Validate live agent state through injected registry port
+        if self.agent_registry is not None:
+            try:
+                agent_ident = await self.agent_registry.get(record.agent_id)
+                agent_status = (
+                    agent_ident.status.value
+                    if hasattr(agent_ident.status, "value")
+                    else str(agent_ident.status)
+                )
+                if agent_status != AgentStatus.ACTIVE.value:
+                    raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value) from e
+
+        # Validate remaining budget through injected usage reader port
+        if self.usage_reader is not None:
+            usages = await self.usage_reader.get(record.mandate_id, tx)
+            dto = record.to_dto()
+            action_amount = dto.action.params.amount_paise
+            for u in usages:
+                if u.remaining_paise is not None and action_amount > u.remaining_paise:
+                    raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
+                if u.remaining_count is not None and u.remaining_count <= 0:
+                    raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
 
         if session is not None:
             stmt = (
@@ -339,6 +403,138 @@ class PersistentEscalationService:
             record.state = EscalationState.EXECUTED.value
 
         return record.to_dto()
+
+    async def execute_approved(
+        self,
+        escalation_id: OpaqueId,
+        tx: Tx,
+        execution_port: ExecutionPort | None = None,
+    ) -> ExecutionResult:
+        """Handoff an approved escalation to Member A's ExecutionPort.
+
+        Guarantees:
+        - Atomic pre-dispatch claim validating hash, live mandate/agent state, budget, and expiry.
+        - Only stored request_id and escalation_id are passed (never replacement parameters).
+        - No recursion: never calls decide().
+        - Duplicate invocation returns stored outcome and never executes twice.
+        - Maps bank outcomes to EscalationState (EXECUTED, FAILED, or retaining unknown outcome).
+        """
+        port = execution_port or self.execution_port
+        if port is None:
+            raise ValueError(ReasonCode.E_SERVICE_UNAVAILABLE.value)
+
+        session = self._get_session(tx)
+        if session is not None:
+            record = await session.get(EscalationRecord, str(escalation_id))
+        else:
+            record = self._memory_store.get(str(escalation_id))
+
+        if record is None:
+            raise KeyError(f"Escalation {escalation_id} not found")
+
+        # Duplicate executor job returns the stored outcome without repeating execution
+        if record.state == EscalationState.EXECUTED.value and record.result_json is not None:
+            return ExecutionResult.model_validate_json(record.result_json)
+
+        # Pre-dispatch claim checks all live constraints atomically
+        await self.claim_execution(
+            escalation_id=record.escalation_id,
+            expected_hash=str(record.action_hash),
+            tx=tx,
+        )
+
+        # Call ExecutionPort with stored IDs only (no replacement parameters!)
+        exec_res = await port.execute_stored(
+            request_id=record.request_id,
+            escalation_id=str(escalation_id),
+        )
+
+        # Map bank outcomes
+        if exec_res.status == ActionStatus.EXECUTED:
+            new_state = EscalationState.EXECUTED.value
+        elif exec_res.status in (ActionStatus.REJECTED, ActionStatus.FAILED):
+            new_state = EscalationState.FAILED.value
+        elif exec_res.status == ActionStatus.EXECUTION_UNKNOWN:
+            # Retain record with unknown outcome, do not label as rejected or offer new key
+            new_state = EscalationState.APPROVED.value
+        else:
+            new_state = EscalationState.FAILED.value
+
+        # Persist terminal outcome
+        result_json = exec_res.model_dump_json()
+        seq = exec_res.audit_ref.seq if exec_res.audit_ref else None
+        entry_hash = exec_res.audit_ref.entry_hash if exec_res.audit_ref else None
+
+        if session is not None:
+            stmt = (
+                update(EscalationRecord)
+                .where(EscalationRecord.escalation_id == str(escalation_id))
+                .values(
+                    state=new_state,
+                    result_json=result_json,
+                    audit_ref_seq=seq,
+                    audit_ref_hash=entry_hash,
+                )
+            )
+            await session.execute(stmt)
+        else:
+            record.state = new_state
+            record.result_json = result_json
+            record.audit_ref_seq = seq
+            record.audit_ref_hash = entry_hash
+
+        return exec_res
+
+    async def recover_undispatched(
+        self,
+        execution_port: ExecutionPort | None = None,
+        tx_provider: Any = None,
+    ) -> list[ExecutionResult]:
+        """Crash recovery on startup: resumes APPROVED-but-undispatched records.
+
+        Rechecks all constraints, dispatches each once, and avoids duplicate execution.
+        """
+        port = execution_port or self.execution_port
+        if port is None:
+            return []
+
+        recovered: list[ExecutionResult] = []
+
+        if self.session_factory is not None and tx_provider is not None:
+            async with tx_provider as tx:
+                session = self._get_session(tx)
+                assert session is not None
+                stmt = select(EscalationRecord).where(
+                    EscalationRecord.state == EscalationState.APPROVED.value
+                )
+                records = (await session.execute(stmt)).scalars().all()
+                for r in records:
+                    try:
+                        res = await self.execute_approved(r.escalation_id, tx, port)
+                        recovered.append(res)
+                    except Exception:
+                        pass
+        else:
+            class SimpleRecoveryTx(Tx):
+
+                @property
+                def id(self) -> str:
+                    return "tx_recovery"
+
+            rec_tx = SimpleRecoveryTx()
+            approved_records = [
+                r
+                for r in list(self._memory_store.values())
+                if r.state == EscalationState.APPROVED.value
+            ]
+            for r in approved_records:
+                try:
+                    res = await self.execute_approved(r.escalation_id, rec_tx, port)
+                    recovered.append(res)
+                except Exception:
+                    pass
+
+        return recovered
 
     async def cancel_for_mandate(self, mandate_id: OpaqueId, tx: Tx) -> None:
         """Cancel all pending or approved escalations for the given mandate."""

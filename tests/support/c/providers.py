@@ -19,7 +19,7 @@ from contracts.core_models import (
     UsageSnapshot,
 )
 from contracts.escalation_models import Escalation, EscalationDecision, EscalationState
-from contracts.identity_models import HumanContext
+from contracts.identity_models import AgentPublicIdentity, AgentStatus, HumanContext
 from contracts.reason_codes import ReasonCode
 from contracts.risk_models import RiskInput, RiskResult
 
@@ -397,3 +397,20 @@ class FixtureLifecycle:
 
     async def reinstate_agent(self, agent_id: OpaqueId) -> None:
         self.reinstated_agents.append(agent_id)
+
+
+@dataclass
+class FixtureAgentRegistry:
+    agents: dict[str, AgentPublicIdentity] = field(default_factory=dict)
+
+    async def get(self, agent_id: OpaqueId) -> AgentPublicIdentity:
+        if agent_id not in self.agents:
+            raise KeyError(f"Agent {agent_id} not registered")
+        return self.agents[agent_id]
+
+    async def set_status(self, agent_id: OpaqueId, status: AgentStatus, tx: Tx) -> None:
+        if agent_id in self.agents:
+            self.agents[agent_id] = self.agents[agent_id].model_copy(update={"status": status})
+
+    async def list_public(self) -> tuple[AgentPublicIdentity, ...]:
+        return tuple(self.agents.values())

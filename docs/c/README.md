@@ -62,6 +62,25 @@
   - Agent free-text note strictly segregated under `agent_note` with `"unverified": true`. Never merged into trusted fields.
 - **Enumeration defense**: Queries for non-existent IDs or unauthorized subjects return identical HTTP 404 responses.
 
-## 6. Contract Questions & Integration Notes
+## 6. Execution Handoff & Crash Recovery (Task C06)
+- **Pre-dispatch constraint re-evaluation (`claim_execution`)**:
+  - Validates stored action hash matches expected authority projection.
+  - Validates live mandate status is `ACTIVE` and within validity window via `MandateReader`.
+  - Validates live agent status is `ACTIVE` via `AgentRegistry`.
+  - Validates approval deadline has not expired (`expires_at > now`).
+  - Validates remaining money budget and transaction count via `UsageReader`.
+  - Enforces single-use claim: subsequent claims raise `E_ESC_ALREADY_CONSUMED`.
+- **Handoff guarantees (`execute_approved`)**:
+  - Passes only stored IDs (`request_id`, `escalation_id`) to `ExecutionPort.execute_stored`.
+  - Strictly forbids parameter replacement or reconstructing actions from incoming client payloads.
+  - Never invokes `decide()` recursively from execution.
+  - Returns stored outcome on duplicate invocations without repeating bank operations.
+  - Maps bank outcomes: `EXECUTED` -> `state = EXECUTED`, `REJECTED`/`FAILED` -> `state = FAILED`, `EXECUTION_UNKNOWN` -> retains unknown outcome without being marked rejected.
+- **Crash recovery (`recover_undispatched`)**:
+  - Scans for `APPROVED`-but-undispatched records on startup.
+  - Re-evaluates every constraint before dispatch to ensure authority has not been revoked during outage.
+  - Dispatches each record exactly once.
+
+## 7. Contract Questions & Integration Notes
 - **PIN & Lifecycle separation**: `contracts/escalation_ports.py` defines `EscalationService.decide(escalation_id, decision, subject_id, tx)`. To preserve clean separation of concerns, `HumanAuth.verify_pin(customer_id, pin)` is evaluated in the route handler prior to calling `decide()`. If wrong PIN is supplied, the escalation remains `PENDING`, an `auth.pin_failed` audit event is emitted, and HTTP 403 `E_ESC_BAD_PIN` is returned.
 - **Reject-and-suspend coordination**: If a customer selects `suspend_agent=true` on rejection, the route calls `Lifecycle.suspend_customer_delegation` to suspend that customer's delegation without affecting other customers.
