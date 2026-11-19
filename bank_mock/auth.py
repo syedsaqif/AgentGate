@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 from typing import Annotated
 
-from fastapi import Header, HTTPException, Request, Security
+from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from contracts.reason_codes import ReasonCode
