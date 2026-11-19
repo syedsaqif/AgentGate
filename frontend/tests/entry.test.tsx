@@ -49,6 +49,8 @@ it.each([
     expect(await screen.findByRole("button", { name: "Approve" })).toBeEnabled();
   } else {
     expect(await screen.findByText("req_ops_demo_review")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Audit entries" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Verify audit chain" })).toBeEnabled();
   }
 });
 

@@ -4,6 +4,7 @@ import type { ApiError } from "../../api/errors";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { RoleWorkspace } from "../../components/RoleWorkspace";
 import { formatKolkataTimestamp } from "../../formatting";
+import { AuditPanel } from "./AuditPanel";
 import { useOpsFeed } from "./useOpsFeed";
 import { useRegisteredAgents } from "./useRegisteredAgents";
 
@@ -100,6 +101,7 @@ function OpsWorkspace({ api, token, endSession }: { api: ShellApi; token: string
             onClick={() => void agents.load(agents.page?.next_cursor ?? null)}>Next agent page</button>}
         </div>
       </section>
+      <AuditPanel api={api} token={token} endSession={closeSession} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { isRecord, shellRoutes, type Role } from "../api/shellWire";
 import type { components } from "../api/generated/openapi";
 import type { ApiTransport } from "../api/types";
 import { createApprovalFixtures, isApprovalRoute, type ApprovalCases } from "./approvals";
+import { createAuditFixtures, isAuditRoute, type AuditVerificationFixture } from "./audit";
 import { createMandateFixtures, isMandateRoute, type MockCustomer } from "./mandates";
 import { createOpsFixtures, isOpsRoute } from "./ops";
 import {
@@ -16,13 +17,14 @@ type MockOptions = {
   now?: () => number;
   additionalCustomers?: readonly MockCustomer[];
   approvalCases?: ApprovalCases;
+  auditVerification?: AuditVerificationFixture;
 };
 
 type MockSession = { role: "customer"; customer: MockCustomer; expiresAt: number }
   | { role: "ops"; expiresAt: number };
 
 export function createMockTransport({
-  readScenario = "populated", now = Date.now, additionalCustomers = [], approvalCases,
+  readScenario = "populated", now = Date.now, additionalCustomers = [], approvalCases, auditVerification = "partial",
 }: MockOptions = {}): ApiTransport {
   const sessions = new Map<string, MockSession>();
   const customers = [{ ...demoCredentials.customer, bootstrap: customerBootstrap }, ...additionalCustomers]
@@ -30,6 +32,7 @@ export function createMockTransport({
   const mandates = createMandateFixtures(now);
   const approvals = createApprovalFixtures(now, approvalCases ?? (readScenario === "empty" ? [] : undefined));
   const ops = createOpsFixtures(now, readScenario);
+  const audit = createAuditFixtures(auditVerification, readScenario === "empty");
   let requestCount = 0;
 
   return {
@@ -48,6 +51,7 @@ export function createMockTransport({
       const mandateRoute = isMandateRoute(url.pathname);
       const approvalRoute = isApprovalRoute(url.pathname);
       const opsRoute = isOpsRoute(url.pathname);
+      const auditRoute = isAuditRoute(url.pathname);
       const isCustomer = path === shellRoutes.customer.login || path === shellRoutes.customer.read || mandateRoute || approvalRoute;
       const role = isCustomer ? "customer" : "ops";
       if (init.method === "POST" && path === shellRoutes[role].login) {
@@ -75,7 +79,8 @@ export function createMockTransport({
         });
       }
 
-      if (!mandateRoute && !approvalRoute && !opsRoute && (init.method !== "GET" || path !== shellRoutes[role].read)) {
+      if (!mandateRoute && !approvalRoute && !opsRoute && !auditRoute
+        && (init.method !== "GET" || path !== shellRoutes[role].read)) {
         return reject(400, "E_REQ_INVALID", "This request is outside the mock shell.");
       }
 
@@ -99,6 +104,9 @@ export function createMockTransport({
       }
       if (opsRoute && session.role === "ops") {
         return ops(url, init, { respond, reject });
+      }
+      if (auditRoute && session.role === "ops") {
+        return audit(url, init, { respond, reject });
       }
       if (readScenario === "unavailable") {
         return reject(503, "E_SERVICE_UNAVAILABLE", "The workspace data is temporarily unavailable.");

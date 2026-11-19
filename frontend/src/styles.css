@@ -138,3 +138,13 @@ small { display: block; }
 .ops-decision-details dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
 .ops-decision-details dt { font-weight: 700; }
 .ops-agent-actions { margin-top: 0.75rem; }
+
+.audit-panel > section + section { border-top: 1px solid #cddbd3; margin-top: 1.25rem; padding-top: 0.75rem; }
+.audit-panel h3 { margin-block: 0.5rem 0.75rem; }
+.audit-actions { margin-block: 0.75rem; }
+.audit-table-wrap { overflow-x: auto; }
+.audit-panel table { width: 100%; border-collapse: collapse; text-align: left; }
+.audit-panel th, .audit-panel td { padding: 0.5rem; border-bottom: 1px solid #cddbd3; vertical-align: top; }
+.audit-panel td details { margin: 0.4rem 0; }
+.audit-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0.75rem; background: #f3f7f4; }
+.audit-report dd { margin-inline-start: 0; overflow-wrap: anywhere; }

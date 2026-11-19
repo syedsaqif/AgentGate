@@ -4,6 +4,7 @@ import { App } from "../src/App";
 import { createShellApi } from "../src/api/client";
 import { createGatewayTransport } from "../src/api/gatewayTransport";
 import { approvalPath } from "../src/api/approvalWire";
+import { auditEntriesPath } from "../src/api/auditWire";
 import { mandatePath } from "../src/api/mandateWire";
 import { opsStreamPath } from "../src/api/opsWire";
 import { shellRoutes, type Role } from "../src/api/shellWire";
@@ -54,16 +55,19 @@ describe("fixture-backed workspaces", () => {
       const row = within(screen.getByText("Budget Assistant").closest("li")!);
       expect(row.getByText("SUSPENDED")).toBeVisible();
     }
-    expect(request.mock.calls.map(([path, init]) => [path, init.method])).toEqual([
-      [shellRoutes[role].login, "POST"],
-      [shellRoutes[role].read, "GET"],
+    const [[loginPath, loginInit], ...reads] = request.mock.calls;
+    expect([loginPath, loginInit.method]).toEqual([shellRoutes[role].login, "POST"]);
+    expect(reads.map(([path]) => path).sort()).toEqual([
+      shellRoutes[role].read,
       ...(role === "customer"
-        ? [[`${approvalPath}?status=PENDING`, "GET"], [mandatePath, "GET"]]
-        : [[opsStreamPath, "GET"]]),
-    ]);
-    const [login, read] = request.mock.calls.map(([, init]) => new Headers(init.headers));
-    expect(login.get("Authorization")).toBeNull();
-    expect(read.get("Authorization")).toMatch(/^Bearer \S+$/);
+        ? [`${approvalPath}?status=PENDING`, mandatePath]
+        : [opsStreamPath, auditEntriesPath]),
+    ].sort());
+    expect(new Headers(loginInit.headers).get("Authorization")).toBeNull();
+    for (const [, read] of reads) {
+      expect(read.method).toBe("GET");
+      expect(new Headers(read.headers).get("Authorization")).toMatch(/^Bearer \S+$/);
+    }
     expect(window.location.search).toBe("");
     expect(window.sessionStorage.length).toBe(0);
     expect(window.localStorage.length).toBe(0);
@@ -108,13 +112,17 @@ describe("fixture-backed workspaces", () => {
   });
 
   it("shows a protected-read contract error", async () => {
-    renderMock("ops", createMockTransport({ readScenario: "unavailable" }));
+    const mock = createMockTransport({ readScenario: "unavailable" });
+    const request = vi.spyOn(mock, "request");
+    renderMock("ops", mock);
     enterSecret("Password", demoCredentials.ops.secret);
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The workspace data is temporarily unavailable.");
     expect(alert).toHaveTextContent("E_SERVICE_UNAVAILABLE");
-    expect(alert).toHaveTextContent("req_mock_2");
+    const readIndex = request.mock.calls.findIndex(([path]) => path === shellRoutes.ops.read);
+    const response = await request.mock.results[readIndex].value;
+    expect(alert).toHaveTextContent(response.headers.get("X-Request-ID")!);
     const registry = within(screen.getByRole("region", { name: "Registered agents" }));
     expect(registry.queryByText("BillPal")).not.toBeInTheDocument();
     expect(registry.getByRole("button", { name: "Retry agent refresh" })).toBeEnabled();
@@ -159,6 +167,7 @@ describe("fixture-backed workspaces", () => {
   it("returns to sign-in with the request reference when the gateway rejects a session", async () => {
     let time = Date.now();
     const mock = createMockTransport({ now: () => time });
+    const request = vi.spyOn(mock, "request");
     const transport = {
       request(path: string, init: RequestInit) {
         if (path === shellRoutes.ops.read) time += demoSessionTtlMs;
@@ -170,7 +179,9 @@ describe("fixture-backed workspaces", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("E_AUTH_EXPIRED");
-    expect(alert).toHaveTextContent("req_mock_2");
+    const readIndex = request.mock.calls.findIndex(([path]) => path === shellRoutes.ops.read);
+    const response = await request.mock.results[readIndex].value;
+    expect(alert).toHaveTextContent(response.headers.get("X-Request-ID")!);
     expect(screen.getByRole("heading", { name: "Ops sign-in" })).toBeVisible();
     expect(screen.queryByText("BillPal")).not.toBeInTheDocument();
   });

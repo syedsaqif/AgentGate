@@ -2,6 +2,10 @@ import {
   approvalPath, decisionPath, isApprovalPage, observeDecision,
   type ApprovalQuery, type CustomerDecision, type DecisionPathParams, type DecisionRequest,
 } from "./approvalWire";
+import {
+  auditEntriesPath, auditEvidencePath, auditFilterKeys, auditVerifyPath, isAuditPage, isEvidenceBundle, isVerifyReport,
+  type AuditCursor, type AuditFilters, type EvidencePathParams,
+} from "./auditWire";
 import { ApiError, errorFromResponse, redactPin } from "./errors";
 import type { operations } from "./generated/openapi";
 import { isMandatePage, mandatePath, revokePath, type CreateMandateBody, type RevokePathParams } from "./mandateWire";
@@ -30,13 +34,17 @@ type ShellRequest =
   | { path: typeof decisionPath; method: "POST"; params: DecisionPathParams }
   | { path: typeof suspendAgentPath; method: "POST"; params: SuspendAgentParams }
   | { path: typeof reinstateAgentPath; method: "POST"; params: ReinstateAgentParams }
-  | { path: PathForMethod<"get">; method: "GET" };
+  | { path: Exclude<PathForMethod<"get">, typeof auditEvidencePath>; method: "GET" }
+  | { path: typeof auditEvidencePath; method: "GET"; params: EvidencePathParams };
 
 export function createShellApi(transport: ApiTransport) {
   function send(target: ShellRequest, init: Omit<RequestInit, "method">, query = "") {
-    const path = "params" in target
-      ? target.path.replace("{id}", encodeURIComponent(target.params.id))
-      : target.path;
+    let path: string = target.path;
+    if (target.path === auditEvidencePath) {
+      path = target.path.replace("{request_id}", encodeURIComponent(target.params.request_id));
+    } else if ("params" in target) {
+      path = target.path.replace("{id}", encodeURIComponent(target.params.id));
+    }
     return transport.request(path + query, { ...init, method: target.method });
   }
 
@@ -84,6 +92,37 @@ export function createShellApi(transport: ApiTransport) {
       const query = cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
       return request({ path: shellRoutes.ops.read, method: "GET" },
         authorized(token, signal), isRegisteredAgents, query);
+    },
+    auditEntries(token: string, filters: AuditFilters, cursor: AuditCursor, signal: AbortSignal) {
+      const query = new URLSearchParams();
+      if (cursor != null) query.set("cursor", cursor);
+      for (const key of auditFilterKeys) {
+        const value = filters[key];
+        if (value) query.set(key, value);
+      }
+      return request({ path: auditEntriesPath, method: "GET" }, authorized(token, signal), isAuditPage,
+        query.size ? `?${query}` : "");
+    },
+    verifyAudit(token: string, signal: AbortSignal) {
+      return request({ path: auditVerifyPath, method: "GET" }, authorized(token, signal), isVerifyReport);
+    },
+    async auditEvidence(token: string, requestId: string, signal: AbortSignal) {
+      if (!requestId || requestId === "." || requestId === "..") {
+        throw new ApiError("The evidence request identifier is invalid.", "UI_INVALID_RESPONSE");
+      }
+      const response = await send({ path: auditEvidencePath, method: "GET", params: { request_id: requestId } },
+        authorized(token, signal));
+      const json = await response.text();
+      let payload: unknown = null;
+      try {
+        payload = JSON.parse(json);
+      } catch {
+        // Report invalid JSON using the usual gateway response handling.
+      }
+      if (!response.ok || !isEvidenceBundle(payload) || payload.request_id !== requestId) {
+        throw errorFromResponse(response, payload);
+      }
+      return { bundle: payload, json };
     },
     updateAgent(token: string, id: string, action: AgentMutation, signal: AbortSignal) {
       if (!id || id === "." || id === "..") throw new ApiError("The agent identifier is invalid.", "UI_INVALID_RESPONSE");
