@@ -13,6 +13,9 @@ from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
 from gateway.deps import Dependencies, build_dependencies
 from gateway.errors import RequestIdMiddleware, register_error_handlers
+from gateway.executor.actions import ActionStore
+from gateway.executor.reservations import ReservationManager
+from gateway.executor.service import ExecutionService
 from gateway.mandates.routes import router as customer_mandates_router
 from gateway.mandates.service import MandateService
 from gateway.platform.db import (
@@ -60,6 +63,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = deps.mandate_service
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+
+    # Initialize execution services if dependencies are present
+    session_factory = getattr(app.state, "session_factory", None)
+    if deps.action_reader is None and session_factory:
+        deps.action_reader = ActionStore(session_factory)
+        deps.extra["action_store"] = deps.action_reader
+
+    if deps.reservation_port is None and deps.mandate_reader is not None:
+        deps.reservation_port = ReservationManager(deps.mandate_reader)
+        deps.extra["reservation_manager"] = deps.reservation_port
+
+    if (
+        getattr(deps, "execution_service", None) is None
+        and deps.unit_of_work is not None
+        and deps.action_reader is not None
+        and deps.reservation_port is not None
+        and deps.bank_client is not None
+        and deps.audit_log is not None
+        and deps.mandate_reader is not None
+        and session_factory
+    ):
+        exec_srv = ExecutionService(
+            unit_of_work=deps.unit_of_work,
+            action_store=deps.action_reader,
+            reservation_manager=deps.reservation_port,
+            bank_client=deps.bank_client,
+            audit_log=deps.audit_log,
+            mandate_reader=deps.mandate_reader,
+            clock=deps.clock,
+            session_factory=session_factory,
+        )
+        deps.execution_service = exec_srv
+        deps.execution_port = exec_srv
+        deps.extra["execution_service"] = exec_srv
 
     yield
 
@@ -116,6 +153,40 @@ def create_app(
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = deps.mandate_service
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+
+    # Initialize execution services if dependencies are present
+    session_factory = getattr(app.state, "session_factory", None)
+    if deps.action_reader is None and session_factory:
+        deps.action_reader = ActionStore(session_factory)
+        deps.extra["action_store"] = deps.action_reader
+
+    if deps.reservation_port is None and deps.mandate_reader is not None:
+        deps.reservation_port = ReservationManager(deps.mandate_reader)
+        deps.extra["reservation_manager"] = deps.reservation_port
+
+    if (
+        getattr(deps, "execution_service", None) is None
+        and deps.unit_of_work is not None
+        and deps.action_reader is not None
+        and deps.reservation_port is not None
+        and deps.bank_client is not None
+        and deps.audit_log is not None
+        and deps.mandate_reader is not None
+        and session_factory
+    ):
+        exec_srv = ExecutionService(
+            unit_of_work=deps.unit_of_work,
+            action_store=deps.action_reader,
+            reservation_manager=deps.reservation_port,
+            bank_client=deps.bank_client,
+            audit_log=deps.audit_log,
+            mandate_reader=deps.mandate_reader,
+            clock=deps.clock,
+            session_factory=session_factory,
+        )
+        deps.execution_service = exec_srv
+        deps.execution_port = exec_srv
+        deps.extra["execution_service"] = exec_srv
 
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
