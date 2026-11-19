@@ -73,7 +73,9 @@ class FixtureScenarioClient:
     simulated_audit_entries: list[dict[str, Any]] = field(default_factory=list)
 
     async def request_token(self, agent_id: str, mandate_id: str) -> dict[str, Any]:
-        self.recorded_calls.append("request_token", {"agent_id": agent_id, "mandate_id": mandate_id})
+        self.recorded_calls.append(
+            ("request_token", {"agent_id": agent_id, "mandate_id": mandate_id})
+        )
         return self.token_responses.get(
             agent_id,
             {
@@ -101,7 +103,9 @@ class FixtureScenarioClient:
 
     async def get_action(self, request_id: str, token: str | None = None) -> dict[str, Any]:
         self.recorded_calls.append(("get_action", {"request_id": request_id, "token": token}))
-        return self.action_responses.get(request_id, {"request_id": request_id, "status": "NOT_FOUND"})
+        return self.action_responses.get(
+            request_id, {"request_id": request_id, "status": "NOT_FOUND"}
+        )
 
     async def get_escalation(
         self, escalation_id: str, token: str | None = None
@@ -115,7 +119,7 @@ class FixtureScenarioClient:
         )
 
     async def customer_login(self, customer_id: str, pin: str) -> dict[str, Any]:
-        self.recorded_calls.append("customer_login", {"customer_id": customer_id, "pin": pin})
+        self.recorded_calls.append(("customer_login", {"customer_id": customer_id, "pin": pin}))
         if pin != "4821":
             return {"error": {"code": "E_ESC_BAD_PIN", "message": "Invalid PIN"}}
         token = self.customer_sessions.get(customer_id, f"sess_{customer_id}")
@@ -166,7 +170,7 @@ class FixtureScenarioClient:
         return {"mandate_id": mandate_id, "status": "REVOKED"}
 
     async def ops_login(self, username: str, password: str) -> dict[str, Any]:
-        self.recorded_calls.append("ops_login", {"username": username})
+        self.recorded_calls.append(("ops_login", {"username": username}))
         token = self.ops_sessions.get(username, "sess_ops")
         return {"session_token": token, "role": "ops", "expires_in": 3600}
 
@@ -174,7 +178,10 @@ class FixtureScenarioClient:
         self, session_token: str, agent_id: str, reason: str | None = None
     ) -> dict[str, Any]:
         self.recorded_calls.append(
-            ("suspend_agent", {"session_token": session_token, "agent_id": agent_id, "reason": reason})
+            (
+                "suspend_agent",
+                {"session_token": session_token, "agent_id": agent_id, "reason": reason},
+            )
         )
         return {"agent_id": agent_id, "status": "SUSPENDED"}
 
