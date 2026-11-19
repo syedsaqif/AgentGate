@@ -21,3 +21,26 @@
 - **Auth-failed traffic**: Tagged with `is_auth_failure=True` (and attributed to `unauthenticated`); never attributed to verified customer/agent baseline history.
 - **Failed / uncertain bank outcomes**: Never enter the successful baseline.
 - **Idempotency**: Attempts are deduplicated on `attempt_id`.
+
+## 4. Signal Catalog & Noisy-OR Combination (Task C03)
+- **10 Deterministic Signals** (`gateway/risk/signals.py`):
+  1. `new_payee` (severity 50, weight 0.40)
+  2. `amount_outlier` (severity 80, weight 0.625)
+  3. `near_limit_structuring` (severity 60, weight 0.40)
+  4. `velocity` (severity 70, weight 0.50)
+  5. `request_rate` (severity 50, weight 0.40)
+  6. `off_pattern_time` (severity 40, weight 0.25)
+  7. `sequence_anomaly` (severity 50, weight 0.30)
+  8. `probing` (severity 95, weight 0.90) — hard trip
+  9. `intent_mismatch` (severity 75, weight 0.60)
+  10. `read_enumeration` (severity 60, weight 0.35)
+- **Noisy-OR Formula**:
+  $$P = 1 - \prod_{i \in \text{fired}} \left(1 - w_i \cdot \frac{s_i}{100}\right), \quad \text{Score} = \text{round}(100 \times P)$$
+- **Profile Thresholds**:
+  - `balanced`: $35 / 70$
+  - `conservative`: $25 / 60$
+  - `permissive`: $45 / 80$
+- **Calibration**:
+  - Ordinary ₹1,850 electricity bill with seeded history: score $< 35$ (**LOW** / `ALLOW`).
+  - Unusual ₹4,800 payment: score $50$ (**MEDIUM** / `ESCALATE`, approvable step-up).
+- **Rule Neutrality**: No rule checks `scenario_id`.
