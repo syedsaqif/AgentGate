@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from contracts.common import ActionType, RiskLevel
 from contracts.core_models import ActionParams, CanonicalAction, Intent

@@ -123,7 +123,7 @@ def create_escalation_router(
                 code=ReasonCode.E_REQ_INVALID,
                 message=f"Escalation {id} not found",
                 status_code=status.HTTP_404_NOT_FOUND,
-            )
+            ) from None
 
         res_dict = esc.result.model_dump(mode="json") if esc.result else None
         return EscalationStatusResponse(
@@ -140,9 +140,9 @@ def create_escalation_router(
         summary="Customer approval inbox",
     )
     async def list_customer_escalations(
-        status_filter: EscalationState | None = Query(None, alias="status"),
-        limit: int = Query(50, ge=1, le=100),
-        cursor: str | None = Query(None),
+        status_filter: EscalationState | None = Query(None, alias="status"),  # noqa: B008
+        limit: int = Query(50, ge=1, le=100),  # noqa: B008
+        cursor: str | None = Query(None),  # noqa: B008
         authorization: str | None = Header(None),
     ) -> EscalationListResponse:
         """List own customer escalations, optionally filtered by status."""
@@ -167,7 +167,7 @@ def create_escalation_router(
                 code=code_str,
                 message="Authentication failed",
                 status_code=http_status,
-            )
+            ) from e
 
         items, next_cursor = await service.list_for_customer(
             customer_id=ctx.subject_id,
@@ -211,7 +211,7 @@ def create_escalation_router(
                 code=code_str,
                 message="Authentication failed",
                 status_code=http_status,
-            )
+            ) from e
 
         customer_id = ctx.subject_id
 
@@ -223,7 +223,7 @@ def create_escalation_router(
                 code=ReasonCode.E_REQ_INVALID,
                 message=f"Escalation {id} not found",
                 status_code=status.HTTP_404_NOT_FOUND,
-            )
+            ) from None
 
         # PIN handling: required for APPROVE
         if body.decision == EscalationDecision.APPROVE:
@@ -255,7 +255,7 @@ def create_escalation_router(
                     code=ReasonCode.E_ESC_BAD_PIN,
                     message="Invalid customer PIN; attempt recorded and rate limited",
                     status_code=status.HTTP_403_FORBIDDEN,
-                )
+                ) from None
 
         # Transaction context wrapper
         class SimpleTx(Tx):
@@ -293,7 +293,7 @@ def create_escalation_router(
                 code=ReasonCode.E_REQ_INVALID,
                 message=f"Escalation {id} not found",
                 status_code=status.HTTP_404_NOT_FOUND,
-            )
+            ) from None
         except ValueError as e:
             code_str = str(e)
             http_status = (
@@ -305,7 +305,7 @@ def create_escalation_router(
                 code=code_str,
                 message=f"Decision rejected: {code_str}",
                 status_code=http_status,
-            )
+            ) from e
 
         # If approved and execution port available, hand off execution
         if (
@@ -330,7 +330,7 @@ def create_escalation_router(
                     code=code_str,
                     message=f"Execution claim failed: {code_str}",
                     status_code=http_status,
-                )
+                ) from e
 
             exec_res = await execution_port.execute_stored(
                 request_id=str(esc.request_id),

@@ -16,7 +16,7 @@ import pytest
 
 from contracts.common import ActionType, RiskLevel
 from contracts.core_models import ActionParams, CanonicalAction, Intent
-from contracts.escalation_models import EscalationDecision, EscalationState
+from contracts.escalation_models import EscalationDecision
 from contracts.reason_codes import ReasonCode
 from contracts.risk_models import RiskResult, RiskSignal
 from gateway.escalation.models import Base
@@ -94,7 +94,6 @@ async def test_simultaneous_approvals_single_winner(tmp_path: Path) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    uow = SqliteUnitOfWork(session_factory)
     clock = FrozenClock(datetime(2026, 11, 19, 11, 0, 0, tzinfo=UTC))
     service = PersistentEscalationService(
         clock=clock,
@@ -103,7 +102,8 @@ async def test_simultaneous_approvals_single_winner(tmp_path: Path) -> None:
 
     # Pre-create a PENDING escalation
     act = _make_action("req_race_single")
-    async with uow as tx:
+    uow_init = SqliteUnitOfWork(session_factory)
+    async with uow_init as tx:
         esc = await service.create(act, _make_assessment(), tx)
 
     # Launch 5 concurrent approval tasks
@@ -150,7 +150,6 @@ async def test_concurrent_creations_cannot_exceed_pending_limit(tmp_path: Path) 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    uow = SqliteUnitOfWork(session_factory)
     clock = FrozenClock(datetime(2026, 11, 19, 11, 0, 0, tzinfo=UTC))
     service = PersistentEscalationService(
         clock=clock,

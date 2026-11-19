@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from contracts.core_models import AccountCard, CanonicalAction, MandateSnapshot, MandateTerms, PayeeCard
+from contracts.core_models import (
+    AccountCard,
+    CanonicalAction,
+    MandateSnapshot,
+    MandateTerms,
+    PayeeCard,
+)
 from contracts.risk_models import RiskResult
 
 
