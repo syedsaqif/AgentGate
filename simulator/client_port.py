@@ -28,6 +28,28 @@ class ScenarioResult:
     message: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def status(self) -> str:
+        if self.skipped:
+            return "SKIP"
+        return "PASS" if self.passed else "FAIL"
+
+    @property
+    def http_status(self) -> str:
+        return "PASS" if self.http_verified else "FAIL"
+
+    @property
+    def bank_ledger_status(self) -> str:
+        return "PASS" if self.ledger_verified else "FAIL"
+
+    @property
+    def mandate_usage_status(self) -> str:
+        return "PASS" if self.usage_verified else "FAIL"
+
+    @property
+    def audit_trail_status(self) -> str:
+        return "PASS" if self.audit_verified else "FAIL"
+
 
 class ScenarioClient(Protocol):
     """Protocol for scenario drivers to interact with gateway and simulation endpoints."""

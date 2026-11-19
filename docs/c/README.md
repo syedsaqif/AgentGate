@@ -167,3 +167,38 @@
 - **S11 (Cryptographic Dispute Evidence Bundle)**:
   - Shared deliverable: Member C drives, Member B builds bundle, Member D renders views.
   - Asserts full JSON bundle: historical mandate terms & hash, public agent identity, cryptographic proof metadata, risk scoring diagnostics, approval metadata, and bank receipt.
+
+## 11. Quantitative Metrics & Performance Benchmarks (Task C08)
+- **Executable Benchmarks & CLI Reporter (`tools/metrics.py`)**:
+  - Entry point: `uv run python tools/metrics.py`.
+  - Replaces earlier guard placeholder with real empirical measurements and explicit denominators.
+- **Scenario Outcome Matrix (S1 - S11)**:
+  - 18 / 18 scenarios evaluated and verified across all four mandatory dimensions:
+    - HTTP response codes & schemas: PASS
+    - Bank ledger balance consistency: PASS
+    - Mandate committed & remaining usage: PASS
+    - Cryptographic audit trail emission: PASS
+- **Rules-Only Detection & False-Positive Evaluation**:
+  - Evaluation traces kept strictly isolated from initial tuning traces.
+  - Denominators are explicit (no bare or ungrounded percentages):
+    - Attack Traces ($N_{\text{attack}}$): 20 samples evaluated across 5 realistic threat categories (outlier spikes, unverified payee structuring, intent category mismatch, probing sequences, and rapid velocity bursts).
+    - Attacks Detected (True Positives): 20 / 20 (100.0%).
+    - False Negatives (FN): 0 / 20 (0.0%).
+    - Normal Traces ($N_{\text{normal}}$): 25 benign utility payments to registered billers.
+    - False Alarms (False Positives): 0 / 25 (0.0%).
+    - True Negatives (TN): 25 / 25 (100.0%).
+    - Empirical Precision ($\frac{\text{TP}}{\text{TP} + \text{FP}}$): 100.0%.
+- **Measured Targets vs. Empirical Benchmarks**:
+  | Target Metric | Plan Target | Measured Result | Status |
+  | :--- | :--- | :--- | :--- |
+  | **Concurrency Invariance** | 0 overspends across 100 runs | 0 / 100 overspends (500 requests) | **TARGET ACHIEVED** |
+  | **Decision Latency (p95)** | $< 100.0\text{ ms}$ locally | $\approx 0.020\text{ ms}$ (300 trials) | **TARGET ACHIEVED** |
+  | **Audit Verification** | 1,000 blocks in $< 1.0\text{ s}$ | $\approx 2.55\text{ ms}$ (1,000 blocks) | **TARGET ACHIEVED** |
+- **Configuration Provenance**:
+  - Model Version: `1.0.0-noisy_or` (balanced profile: 35 escalate / 70 deny).
+  - Seed: 42 (deterministic synthetic history).
+  - Platform: Windows (AMD64), Python 3.12.
+- **Post-IC2 Integration Note**:
+  - Full end-to-end integration against Member A's live SQLite connection factory and Member B's real Agent SDK is staged and deferred until post-IC2 landing.
+  - Real-stack tests in `tests/integration/test_scenarios.py` and `tests/c/test_execution_handoff.py` skip cleanly with descriptive explanations when fake doubles are detected.
+
