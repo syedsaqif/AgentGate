@@ -56,3 +56,9 @@ class CustomerMandateItem(ContractModel):
 class CustomerMandateListResponse(ContractModel):
     items: tuple[CustomerMandateItem, ...]
     next_cursor: str | None = None
+
+
+class RevokeMandateResponse(ContractModel):
+    mandate_id: OpaqueId
+    status: str = "REVOKED"
+    audit_ref: AuditRef | None = None

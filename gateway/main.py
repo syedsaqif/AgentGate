@@ -13,11 +13,13 @@ from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
 from gateway.deps import Dependencies, build_dependencies
 from gateway.errors import RequestIdMiddleware, register_error_handlers
+from gateway.events.bus import EventBus
 from gateway.executor.actions import ActionStore
 from gateway.executor.reservations import ReservationManager
 from gateway.executor.service import ExecutionService
 from gateway.mandates.routes import router as customer_mandates_router
 from gateway.mandates.service import MandateService
+from gateway.pipeline import router as pipeline_router
 from gateway.platform.db import (
     Base,
     SqliteUnitOfWork,
@@ -25,6 +27,7 @@ from gateway.platform.db import (
     create_session_factory,
 )
 from gateway.platform.health import router as health_router
+from gateway.platform.lifecycle import LifecycleCoordinator
 from gateway.platform.startup import init_database
 
 
@@ -97,6 +100,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps.execution_service = exec_srv
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
+
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
+
+    if (
+        deps.lifecycle is None
+        and deps.unit_of_work is not None
+        and deps.audit_log is not None
+    ):
+        deps.lifecycle = LifecycleCoordinator(
+            unit_of_work=deps.unit_of_work,
+            audit_log=deps.audit_log,
+            clock=deps.clock,
+            event_bus=deps.event_bus,
+            token_service=deps.token_service,
+            escalation_service=deps.escalation_service,
+            agent_registry=deps.agent_registry,
+        )
 
     yield
 
@@ -188,6 +209,24 @@ def create_app(
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
 
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
+
+    if (
+        deps.lifecycle is None
+        and deps.unit_of_work is not None
+        and deps.audit_log is not None
+    ):
+        deps.lifecycle = LifecycleCoordinator(
+            unit_of_work=deps.unit_of_work,
+            audit_log=deps.audit_log,
+            clock=deps.clock,
+            event_bus=deps.event_bus,
+            token_service=deps.token_service,
+            escalation_service=deps.escalation_service,
+            agent_registry=deps.agent_registry,
+        )
+
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
 
@@ -197,6 +236,7 @@ def create_app(
     # Mount platform routers
     app.include_router(health_router)
     app.include_router(customer_mandates_router)
+    app.include_router(pipeline_router)
 
     return app
 
