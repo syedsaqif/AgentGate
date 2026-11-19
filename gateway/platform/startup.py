@@ -6,6 +6,7 @@ from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 # Ensure Member A tables are registered on Base.metadata
+import gateway.executor.schema  # noqa: F401
 import gateway.mandates.schema  # noqa: F401
 
 
