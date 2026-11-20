@@ -39,6 +39,9 @@ h1 { margin: 1.75rem 0 1rem; line-height: 1.2; }
 h2 { margin: 0 0 0.75rem; font-size: 1.2rem; }
 
 .mock-mode {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 1;
   display: inline-block;
   margin: 0 0 1.25rem;
   padding: 0.3rem 0.6rem;
