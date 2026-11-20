@@ -22,7 +22,29 @@ def compute_request_fingerprint(
 ) -> str:
     """Compute RFC 8785 JCS hash of validated route/method/body including note."""
     if hasattr(body, "model_dump"):
-        serialized_body = body.model_dump(mode="json", exclude_none=True)
+        if hasattr(body, "params") and hasattr(body, "action_type"):
+            # CanonicalAction: fingerprint the semantic action payload excluding
+            # ephemeral request metadata
+            params_dict = (
+                body.params.model_dump(mode="json", exclude_none=True)
+                if hasattr(body.params, "model_dump")
+                else body.params
+            )
+            intent_dict = (
+                body.intent.model_dump(mode="json", exclude_none=True)
+                if getattr(body, "intent", None) and hasattr(body.intent, "model_dump")
+                else getattr(body, "intent", None)
+            )
+            serialized_body = {
+                "action_type": str(body.action_type),
+                "customer_id": getattr(body, "customer_id", None),
+                "agent_id": getattr(body, "agent_id", None),
+                "mandate_id": getattr(body, "mandate_id", None),
+                "params": params_dict,
+                "intent": intent_dict,
+            }
+        else:
+            serialized_body = body.model_dump(mode="json", exclude_none=True)
     elif isinstance(body, dict):
         serialized_body = body
     else:

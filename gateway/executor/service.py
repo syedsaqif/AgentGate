@@ -82,7 +82,7 @@ class ExecutionService(ExecutionPort):
 
         async with self.unit_of_work as tx:
             session: AsyncSession = tx.session
-            _, is_new = await claim_idempotency(
+            idem_rec, is_new = await claim_idempotency(
                 session=session,
                 customer_id=action.customer_id,
                 agent_id=action.agent_id,
@@ -93,7 +93,7 @@ class ExecutionService(ExecutionPort):
             )
 
             if not is_new:
-                existing = await self.action_store.get_record(session, action.request_id)
+                existing = await self.action_store.get_record(session, idem_rec.request_id)
                 if existing is not None:
                     return existing, False
 

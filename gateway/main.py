@@ -120,6 +120,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             agent_registry=deps.agent_registry,
         )
 
+    if deps.escalation_service is not None:
+        if getattr(deps.escalation_service, "session_factory", None) is None:
+            deps.escalation_service.session_factory = getattr(app.state, "session_factory", None)
+        if getattr(deps.escalation_service, "mandate_reader", None) is None:
+            deps.escalation_service.mandate_reader = deps.mandate_reader
+        if getattr(deps.escalation_service, "usage_reader", None) is None:
+            deps.escalation_service.usage_reader = deps.usage_reader
+        if getattr(deps.escalation_service, "execution_port", None) is None:
+            deps.escalation_service.execution_port = deps.execution_port
+        if getattr(deps.escalation_service, "audit_log", None) is None:
+            deps.escalation_service.audit_log = deps.audit_log
+        if getattr(deps.escalation_service, "catalog", None) is None:
+            deps.escalation_service.catalog = deps.catalog
+        if getattr(deps.escalation_service, "agent_registry", None) is None:
+            deps.escalation_service.agent_registry = deps.agent_registry
+
+    # Run recover_unresolved() during gateway lifespan startup
+    exec_svc = getattr(deps, "execution_service", None) or getattr(deps, "execution_port", None)
+    if exec_svc is not None and hasattr(exec_svc, "recover_unresolved"):
+        await exec_svc.recover_unresolved()
+
     yield
 
     # Teardown database resources
@@ -135,9 +156,6 @@ def create_app(
     """FastAPI application factory for the modular monolith gateway."""
     config = AgentGateConfig.load(profile=profile, overrides=overrides)
     deps = build_dependencies(config=config, overrides=overrides)
-
-    # Validate profile on app creation
-    deps.validate_for_profile()
 
     app = FastAPI(
         title="AgentGate Gateway",
@@ -228,6 +246,9 @@ def create_app(
             agent_registry=deps.agent_registry,
         )
 
+    # Validate profile after dependencies are composed
+    deps.validate_for_profile()
+
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
 
@@ -239,6 +260,20 @@ def create_app(
     app.include_router(customer_mandates_router)
     app.include_router(pipeline_router)
     app.include_router(events_router)
+
+    # Mount Member C escalation router if escalation service is configured
+    if deps.escalation_service is not None:
+        from gateway.escalation.routes import create_escalation_router
+
+        escalation_router = create_escalation_router(
+            service=deps.escalation_service,
+            human_auth=deps.human_auth,
+            lifecycle=deps.lifecycle,
+            execution_port=deps.execution_port,
+            audit_log=deps.audit_log,
+            unit_of_work=deps.unit_of_work,
+        )
+        app.include_router(escalation_router)
 
     # Conditionally mount dev router ONLY in test and scripted profiles
     if profile in ("test", "scripted") and config.active_profile_settings.allow_dev_controls:

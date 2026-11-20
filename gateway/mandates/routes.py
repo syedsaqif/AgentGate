@@ -107,13 +107,14 @@ async def list_mandates_endpoint(
     return CustomerMandateListResponse(items=items, next_cursor=next_cursor)
 
 
-@router.post("/mandates/{mandate_id}/revoke", response_model=RevokeMandateResponse)
+@router.post("/mandates/{id}/revoke", response_model=RevokeMandateResponse)
 async def revoke_mandate_endpoint(
-    mandate_id: str,
+    id: str,
     customer_id: Annotated[str, Depends(get_current_customer)],
     deps: Annotated[Dependencies, Depends(get_deps)],
 ) -> RevokeMandateResponse:
     """Revoke a customer-owned mandate, its tokens, and pending approvals."""
+    mandate_id = id
     mandate_service = getattr(deps, "mandate_service", None)
     if not mandate_service or not deps.lifecycle:
         raise AgentGateError(
