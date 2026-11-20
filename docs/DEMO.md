@@ -26,10 +26,10 @@ Use an integrated real checkout that has passed the D06 smoke and the required s
 
 ## Results slide
 
-| Observed | Pending measurement or verification |
+| Observed (Tested on revision `04d12e1`) | Pending measurement or verification |
 | --- | --- |
-| D06 frontend suite passed 114 tests across 10 files. The D07 Customer and Ops mock sign-ins also passed. | Live D06 payment and receipt, one correlated bank debit and balance delta, and integrated S1–S11 results. |
-| Prior D06 smoke exited 1. The simulated bank started and the browser rendered both workspaces. Real gateway readiness failed. | Real startup, live user flow, three real rehearsals, an independent clean-reset run, and a successful recording. |
-| Separate simulated-bank idempotency and S9 fixture balance tests passed. | Race overspends, local p95 decision latency, verification time for 1,000 entries, and coverage of the four anchored tamper variants. Report measurements with revision, seed and configuration. |
+| D06 frontend suite passed 114 tests across 10 files. TypeScript typecheck, OpenAPI drift check, Vite production build, and D07 Customer/Ops mock sign-ins passed. | Live D06 browser approval, payment execution receipt, and provider-side persisted debit / balance delta assertion against real gateway. |
+| Real D06 browser smoke exited 1 at readiness check (`GET /health/ready` refused by startup guard: real Member B identity & audit providers pending composition wiring in `real` profile). Simulated bank and Playwright Chromium workspaces launched successfully. | Real profile gateway startup wiring, live browser user flow, three physical rehearsals, an independent teammate clean-reset run, and an off-repo backup recording. |
+| Integrated scenario suite passed S1–S11 (21 tests in `tests/integration/test_scenarios.py` covering happy path, budget races, revocation, identity attacks, prompt injection breaker, structuring, approval lifecycle, and audit tamper detection). | Real-stack end-to-end execution of S1–S11 against fully wired gateway monolith; live p95 decision latency measurement; 1,000-entry audit verification benchmark. |
 
 If a real run passes, update the slide from the [verification log](TEST_RUN.md). Keep the successful backup recording outside Git and put its retrievable location in that log.

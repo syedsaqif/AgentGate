@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -410,7 +410,7 @@ async def process_money_action(
         dpop_header = request.headers.get("DPoP") or request.headers.get("dpop") or ""
         signed_req = SignedRequestEvidence(
             proof_jws=dpop_header,
-            proof_jti=auth_ctx.proof_jti,
+            proof_jti=auth_ctx.proof_jti or "",
             body_sha256=sha256_base64url(raw_bytes),
             action_hash=action_hash(canonical_action),
         )
@@ -422,7 +422,7 @@ async def process_money_action(
         )
 
     audit_event = AuditEvent(
-        event_type=f"payment.{final_decision.value.lower()}",
+        event_type="policy.decision",
         request_id=canonical_action.request_id,
         customer_id=canonical_action.customer_id,
         agent_id=canonical_action.agent_id,

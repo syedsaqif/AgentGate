@@ -40,7 +40,7 @@ def create_db_engine(db_url: str, echo: bool = False) -> AsyncEngine:
             pass  # in-memory SQLite does not support WAL
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     @event.listens_for(engine.sync_engine, "begin")
