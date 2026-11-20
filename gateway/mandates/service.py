@@ -396,7 +396,17 @@ class MandateService(MandateReader, UsageReader):
                 key_id=row.key_id,
             )
             usage = await self.get_usage(row.mandate_id)
-            items.append(CustomerMandateItem(mandate=snapshot, usage=usage))
+            items.append(
+                CustomerMandateItem(
+                    terms=snapshot.terms,
+                    status=snapshot.status,
+                    mandate_hash=snapshot.mandate_hash,
+                    sig=snapshot.sig,
+                    key_id=snapshot.key_id,
+                    usage=usage,
+                    mandate=snapshot,
+                )
+            )
 
         return tuple(items), next_cursor
 

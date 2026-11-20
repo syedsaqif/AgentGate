@@ -26,7 +26,7 @@ def create_identity_schema(engine_or_conn: Engine | Connection) -> None:
     IDENTITY_METADATA.create_all(engine_or_conn)
 
 
-def create_sqlite_identity_engine(database_url: str, *, busy_timeout_ms: int = 5000) -> Engine:
+def create_sqlite_identity_engine(database_url: str, *, busy_timeout_ms: int = 30000) -> Engine:
     """Create a SQLite engine configured with WAL mode, foreign keys, and BEGIN IMMEDIATE."""
 
     normalized_url = database_url.replace("sqlite+aiosqlite://", "sqlite://", 1)

@@ -27,6 +27,18 @@ from gateway.mandates.models import Catalog
 from gateway.platform.clock import SystemClock
 
 
+class LazyMandateReader(MandateReader):
+    """Proxy mandate reader resolved once MandateService is bound."""
+
+    def __init__(self, target: MandateReader | None = None) -> None:
+        self.target = target
+
+    async def get(self, mandate_id: Any, tx: Any = None) -> Any:
+        if self.target is None:
+            raise RuntimeError("MandateReader target not yet bound")
+        return await self.target.get(mandate_id, tx)
+
+
 def is_fake_provider(provider: Any) -> bool:
     """Detect whether a given provider is a test double or fake."""
     if provider is None:
@@ -279,8 +291,70 @@ def build_dependencies(
     audit_log = None
     catalog = None
     identity_verifier = None
+    lazy_mandate_reader = None
 
-    if config.profile == "scripted":
+    if config.profile == "real":
+        from pathlib import Path
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from gateway.identity.crypto import generate_ed25519_keypair
+        from gateway.identity.human_auth import HumanSessionKeyring
+        from gateway.identity.schema import (
+            create_identity_schema,
+            create_identity_session_factory,
+            create_sqlite_identity_engine,
+        )
+        from gateway.audit.schema import create_audit_schema
+        from gateway.identity.wiring import build_real_member_b_providers
+        from gateway.mandates.models import DefaultCatalog
+
+        def _get_key(path_str: str | None) -> Ed25519PrivateKey:
+            if path_str and Path(path_str).exists():
+                loaded = serialization.load_pem_private_key(
+                    Path(path_str).read_bytes(), password=None
+                )
+                if isinstance(loaded, Ed25519PrivateKey):
+                    return loaded
+            key, _ = generate_ed25519_keypair()
+            if path_str:
+                p = Path(path_str)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                pem = key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+                p.write_bytes(pem)
+            return key
+
+        token_signing_key = _get_key(config.token_signing_key_path)
+        audit_signing_key = _get_key(config.audit_signing_key_path)
+        human_keyring = HumanSessionKeyring.generate()
+
+        b_engine = create_sqlite_identity_engine(config.database.gateway_url)
+        create_identity_schema(b_engine)
+        create_audit_schema(b_engine)
+        sf = create_identity_session_factory(b_engine)
+
+        lazy_mandate_reader = LazyMandateReader()
+        b_providers = build_real_member_b_providers(
+            session_factory=sf,
+            clock=clock,
+            mandate_reader=lazy_mandate_reader,
+            trusted_origin=config.gateway_origin,
+            token_signing_key=token_signing_key,
+            audit_signing_key=audit_signing_key,
+            human_keyring=human_keyring,
+        )
+
+        human_auth = b_providers.human_auth
+        agent_registry = b_providers.registry
+        token_service = b_providers.token_service
+        audit_log = b_providers.audit_log
+        identity_verifier = b_providers.identity_verifier
+        catalog = DefaultCatalog()
+
+    elif config.profile == "scripted":
         # Fallback to test doubles for Member B modules not yet implemented on main
         from tests.support.a.providers import (
             FakeAgentRegistry,
@@ -320,6 +394,8 @@ def build_dependencies(
         bank_client=bank_client,
         event_bus=event_bus,
     )
+    if lazy_mandate_reader is not None:
+        deps.extra["lazy_mandate_reader"] = lazy_mandate_reader
 
     if overrides:
         for k, v in overrides.items():

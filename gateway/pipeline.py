@@ -8,7 +8,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from contracts.audit_models import AuditEvent
+from contracts.audit_models import AuditEvent, SignedRequestEvidence
+from contracts.canonical import action_hash, sha256_base64url
 from contracts.common import (
     ActionType,
     FinalDecision,
@@ -26,9 +27,10 @@ from contracts.core_models import (
     Intent,
     MandateStatus,
 )
-from contracts.identity_models import AgentStatus, AuthContext
+from contracts.identity_models import AgentPublicIdentity, AgentStatus, AuthContext
 from contracts.reason_codes import HTTP_STATUS_BY_CODE, ReasonCode
 from contracts.risk_models import HistorySnapshot, RiskInput, RiskResult
+from gateway.audit.evidence import build_request_evidence_payload
 from gateway.deps import Dependencies
 from gateway.errors import AgentGateError, get_or_create_request_id
 
@@ -113,6 +115,11 @@ async def authenticate_agent(
                 )
             except Exception:
                 pass
+        if hasattr(exc, "code") and isinstance(exc.code, ReasonCode):
+            st = getattr(exc, "http_status", 401)
+            raise AgentGateError(
+                code=exc.code, message=str(exc), status_code=st
+            ) from exc
         code_str = str(exc)
         if code_str in ReasonCode.__members__:
             reason = ReasonCode(code_str)
@@ -168,6 +175,7 @@ async def process_money_action(
     auth_ctx = await authenticate_agent(request, raw_bytes, deps)
 
     # Check agent status in AgentRegistry if configured
+    agent_pub: AgentPublicIdentity | None = None
     if deps.agent_registry is not None:
         try:
             agent_pub = await deps.agent_registry.get(auth_ctx.agent_id)
@@ -288,16 +296,7 @@ async def process_money_action(
             status_code=403,
         )
 
-    usage_snapshots = await deps.usage_reader.get(canonical_action.mandate_id)
-    policy_result = deps.policy_evaluator.evaluate(
-        action=canonical_action,
-        mandate=snapshot,
-        usages=usage_snapshots,
-        now=deps.clock.now(),
-    )
-
-    # 6. Risk Engine scoring & attempt recording
-    # Section 7.1: Always record & score attempt, even on hard policy DENY
+    # 5. History snapshot & Pure Policy Evaluation
     history_snap = HistorySnapshot()
     history_store = getattr(deps.risk_engine, "history_store", None)
     if history_store is not None and hasattr(history_store, "get_history_snapshot"):
@@ -307,6 +306,17 @@ async def process_money_action(
             now=deps.clock.now(),
         )
 
+    usage_snapshots = await deps.usage_reader.get(canonical_action.mandate_id)
+    policy_result = deps.policy_evaluator.evaluate(
+        action=canonical_action,
+        mandate=snapshot,
+        usages=usage_snapshots,
+        now=deps.clock.now(),
+        known_paid_payees=history_snap.previously_paid_payees,
+    )
+
+    # 6. Risk Engine scoring & attempt recording
+    # Section 7.1: Always record & score attempt, even on hard policy DENY
     risk_input = RiskInput(
         auth=auth_ctx,
         action=canonical_action,
@@ -389,6 +399,28 @@ async def process_money_action(
             status_code=503,
         )
 
+    evidence_payload: dict[str, Any] = {}
+    if agent_pub is None and deps.agent_registry is not None:
+        try:
+            agent_pub = await deps.agent_registry.get(canonical_action.agent_id)
+        except Exception:
+            pass
+
+    if agent_pub is not None and snapshot is not None:
+        dpop_header = request.headers.get("DPoP") or request.headers.get("dpop") or ""
+        signed_req = SignedRequestEvidence(
+            proof_jws=dpop_header,
+            proof_jti=auth_ctx.proof_jti,
+            body_sha256=sha256_base64url(raw_bytes),
+            action_hash=action_hash(canonical_action),
+        )
+        evidence_payload = build_request_evidence_payload(
+            mandate=snapshot,
+            agent=agent_pub,
+            action=canonical_action,
+            signed_request=signed_req,
+        )
+
     audit_event = AuditEvent(
         event_type=f"payment.{final_decision.value.lower()}",
         request_id=canonical_action.request_id,
@@ -407,6 +439,7 @@ async def process_money_action(
             "from_account": canonical_action.params.from_account,
             "amount_paise": canonical_action.params.amount_paise,
             "action_type": str(canonical_action.action_type),
+            **evidence_payload,
         },
         occurred_at=deps.clock.now(),
     )

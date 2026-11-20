@@ -156,13 +156,17 @@ def create_escalation_router(
 
         try:
             ctx = await human_auth.authenticate(token, HumanRole.CUSTOMER)
-        except ValueError as e:
-            code_str = str(e)
-            http_status = (
-                HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_401_UNAUTHORIZED)
-                if code_str in ReasonCode.__members__
-                else status.HTTP_401_UNAUTHORIZED
-            )
+        except Exception as e:
+            if hasattr(e, "code") and isinstance(e.code, ReasonCode):
+                code_str = e.code.value
+                http_status = getattr(e, "http_status", status.HTTP_401_UNAUTHORIZED)
+            else:
+                code_str = str(e)
+                http_status = (
+                    HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_401_UNAUTHORIZED)
+                    if code_str in ReasonCode.__members__
+                    else status.HTTP_401_UNAUTHORIZED
+                )
             raise AgentGateError(
                 code=code_str,
                 message="Authentication failed",
@@ -200,13 +204,17 @@ def create_escalation_router(
 
         try:
             ctx = await human_auth.authenticate(token, HumanRole.CUSTOMER)
-        except ValueError as e:
-            code_str = str(e)
-            http_status = (
-                HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_401_UNAUTHORIZED)
-                if code_str in ReasonCode.__members__
-                else status.HTTP_401_UNAUTHORIZED
-            )
+        except Exception as e:
+            if hasattr(e, "code") and isinstance(e.code, ReasonCode):
+                code_str = e.code.value
+                http_status = getattr(e, "http_status", status.HTTP_401_UNAUTHORIZED)
+            else:
+                code_str = str(e)
+                http_status = (
+                    HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_401_UNAUTHORIZED)
+                    if code_str in ReasonCode.__members__
+                    else status.HTTP_401_UNAUTHORIZED
+                )
             raise AgentGateError(
                 code=code_str,
                 message="Authentication failed",
@@ -235,7 +243,7 @@ def create_escalation_router(
                 )
             try:
                 await human_auth.verify_pin(customer_id, body.pin)
-            except ValueError:
+            except Exception:
                 # Wrong PIN: escalation stays PENDING, audited, 403 E_ESC_BAD_PIN
                 if audit_log is not None:
                     event = AuditEvent(
@@ -258,17 +266,6 @@ def create_escalation_router(
                 ) from None
 
         # Transaction context wrapper
-        class SimpleTx(Tx):
-
-            def __init__(self, tx_id: str) -> None:
-                self._id = tx_id
-
-            @property
-            def id(self) -> str:
-                return self._id
-
-        tx: Tx = SimpleTx(f"tx_dec_{uuid.uuid4().hex[:8]}")
-
         # Customer reject-and-suspend invokes lifecycle
         if (
             body.decision == EscalationDecision.REJECT
@@ -286,7 +283,7 @@ def create_escalation_router(
                 escalation_id=id,
                 decision=body.decision,
                 subject_id=customer_id,
-                tx=tx,
+                tx=None,
             )
         except KeyError:
             raise AgentGateError(
@@ -315,7 +312,7 @@ def create_escalation_router(
             try:
                 exec_res = await service.execute_approved(
                     escalation_id=id,
-                    tx=tx,
+                    tx=None,
                     execution_port=execution_port,
                 )
             except ValueError as e:

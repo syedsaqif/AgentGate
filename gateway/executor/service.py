@@ -236,7 +236,10 @@ class ExecutionService(ExecutionPort):
                     agent_id=action.agent_id,
                     mandate_id=action.mandate_id,
                     mandate_hash=action.mandate_hash,
-                    safe_payload={"bank_operation_id": bank_res.bank_operation_id},
+                    safe_payload={
+                        "bank_result": bank_res.model_dump(mode="json"),
+                        "bank_operation_id": bank_res.bank_operation_id,
+                    },
                     occurred_at=self.clock.now(),
                 )
                 final_audit = await self.audit_log.append(exec_event, tx=tx)
@@ -268,6 +271,7 @@ class ExecutionService(ExecutionPort):
                     mandate_id=action.mandate_id,
                     mandate_hash=action.mandate_hash,
                     reason_codes=(reason,),
+                    safe_payload={"bank_result": bank_res.model_dump(mode="json")},
                     occurred_at=self.clock.now(),
                 )
                 final_audit = await self.audit_log.append(fail_event, tx=tx)
@@ -293,6 +297,7 @@ class ExecutionService(ExecutionPort):
                 mandate_id=action.mandate_id,
                 mandate_hash=action.mandate_hash,
                 reason_codes=(ReasonCode.E_BANK_UNAVAILABLE.value,),
+                safe_payload={"bank_result": bank_res.model_dump(mode="json")},
                 occurred_at=self.clock.now(),
             )
             final_audit = await self.audit_log.append(unk_event, tx=tx)

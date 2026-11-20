@@ -16,7 +16,7 @@ async function step(name, action, dependency = true) {
     return result ?? true;
   } catch (error) {
     process.exitCode = 1;
-    console.log(`FAIL     ${name}: ${error instanceof SmokeFailure ? error.message : "expected operation did not complete"}`);
+    console.log(`FAIL     ${name}: ${error instanceof SmokeFailure ? error.message : `${error?.message || "expected operation did not complete"}`}`);
   }
 }
 
@@ -98,6 +98,8 @@ async function run() {
       });
       context.setDefaultTimeout(7000);
       const page = await context.newPage();
+      page.on("console", (msg) => console.log("PAGE CONSOLE:", msg.type(), msg.text()));
+      page.on("pageerror", (err) => console.log("PAGE ERROR:", err));
       await page.goto(origin + "/" + role);
       await button(page, "Sign in").waitFor();
       requireResult(await page.locator(".mock-mode").count() === 0, "unexpected fixture mode");

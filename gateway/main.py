@@ -38,9 +38,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     deps: Dependencies = app.state.deps
     config: AgentGateConfig = app.state.config
 
-    # Strict check: real profile must reject missing or fake security dependencies
-    deps.validate_for_profile()
-
     # Configure database engine & session factory if not already supplied
     if config.database.gateway_url:
         engine = getattr(app.state, "engine", None)
@@ -67,6 +64,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
 
     # Initialize execution services if dependencies are present
     session_factory = getattr(app.state, "session_factory", None)
@@ -141,6 +142,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if exec_svc is not None and hasattr(exec_svc, "recover_unresolved"):
         await exec_svc.recover_unresolved()
 
+    # Strict check: real profile must reject missing or fake security dependencies
+    deps.validate_for_profile()
+
     yield
 
     # Teardown database resources
@@ -193,6 +197,8 @@ def create_app(
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
 
     # Initialize execution services if dependencies are present
     session_factory = getattr(app.state, "session_factory", None)
@@ -246,10 +252,36 @@ def create_app(
             agent_registry=deps.agent_registry,
         )
 
+    if deps.escalation_service is not None:
+        if getattr(deps.escalation_service, "session_factory", None) is None:
+            deps.escalation_service.session_factory = getattr(app.state, "session_factory", None)
+        if getattr(deps.escalation_service, "mandate_reader", None) is None:
+            deps.escalation_service.mandate_reader = deps.mandate_reader
+        if getattr(deps.escalation_service, "usage_reader", None) is None:
+            deps.escalation_service.usage_reader = deps.usage_reader
+        if getattr(deps.escalation_service, "execution_port", None) is None:
+            deps.escalation_service.execution_port = deps.execution_port
+        if getattr(deps.escalation_service, "audit_log", None) is None:
+            deps.escalation_service.audit_log = deps.audit_log
+        if getattr(deps.escalation_service, "catalog", None) is None:
+            deps.escalation_service.catalog = deps.catalog
+        if getattr(deps.escalation_service, "agent_registry", None) is None:
+            deps.escalation_service.agent_registry = deps.agent_registry
+
     # Validate profile after dependencies are composed
     deps.validate_for_profile()
 
-    # Register X-Request-ID middleware
+    # Register X-Request-ID and CORS middlewares
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
     app.add_middleware(RequestIdMiddleware)
 
     # Register uniform error envelope handlers

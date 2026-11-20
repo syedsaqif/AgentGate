@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+import uuid
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +24,7 @@ from contracts.risk_models import RiskResult
 from gateway.escalation.expiry import expire_due_in_session
 from gateway.escalation.models import EscalationRecord
 from gateway.escalation.summary import build_trusted_summary
+from gateway.platform.db import SqliteTx
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -96,83 +98,100 @@ class PersistentEscalationService:
     ) -> Escalation:
         """Create a new human escalation for step-up actions."""
         session = self._get_session(tx)
-        now = self.clock.now()
+        close_session = False
+        if session is None and self.session_factory is not None:
+            session = self.session_factory()
+            await session.begin()
+            close_session = True
 
-        # Enforce max 3 PENDING per mandate in the same transaction
-        if session is not None:
-            stmt = (
-                select(func.count())
-                .select_from(EscalationRecord)
-                .where(
-                    EscalationRecord.mandate_id == action.mandate_id,
-                    EscalationRecord.state == EscalationState.PENDING.value,
+        try:
+            now = self.clock.now()
+
+            # Enforce max 3 PENDING per mandate in the same transaction
+            if session is not None:
+                stmt = (
+                    select(func.count())
+                    .select_from(EscalationRecord)
+                    .where(
+                        EscalationRecord.mandate_id == action.mandate_id,
+                        EscalationRecord.state == EscalationState.PENDING.value,
+                    )
                 )
+                count = (await session.execute(stmt)).scalar() or 0
+            else:
+                count = sum(
+                    1
+                    for r in self._memory_store.values()
+                    if r.mandate_id == action.mandate_id
+                    and r.state == EscalationState.PENDING.value
+                )
+
+            if count >= self.config.max_pending_per_mandate:
+                raise ValueError(ReasonCode.E_ESC_LIMIT_REACHED.value)
+
+            # Compute bound action hash and expiration
+            bound_hash = action_hash(action)
+            expires_at = now + timedelta(seconds=self.config.ttl_seconds)
+
+            # Lookup catalog details if available
+            payee_card = None
+            account_card = None
+            if self.catalog is not None:
+                if action.params.payee_id:
+                    payee_card = self.catalog.get_payee(action.params.payee_id)
+                account_card = self.catalog.get_account(action.params.from_account)
+
+            mandate_snapshot = None
+            if self.mandate_reader is not None:
+                try:
+                    mandate_snapshot = await self.mandate_reader.get(action.mandate_id, tx)
+                except Exception:
+                    mandate_snapshot = None
+
+            summary = build_trusted_summary(
+                action=action,
+                payee=payee_card,
+                account=account_card,
+                mandate=mandate_snapshot,
+                assessment=assessment,
             )
-            count = (await session.execute(stmt)).scalar() or 0
-        else:
-            count = sum(
-                1
-                for r in self._memory_store.values()
-                if r.mandate_id == action.mandate_id
-                and r.state == EscalationState.PENDING.value
+
+            escalation_id = f"esc_{action.request_id}"
+            reason_codes = tuple(s.reason_code for s in assessment.signals)
+
+            esc = Escalation(
+                escalation_id=escalation_id,
+                request_id=action.request_id,
+                customer_id=action.customer_id,
+                agent_id=action.agent_id,
+                mandate_id=action.mandate_id,
+                action=action,
+                action_hash=bound_hash,
+                trusted_summary=summary,
+                reason_codes=reason_codes,
+                expires_at=expires_at,
+                state=EscalationState.PENDING,
             )
 
-        if count >= self.config.max_pending_per_mandate:
-            raise ValueError(ReasonCode.E_ESC_LIMIT_REACHED.value)
+            record = EscalationRecord.from_dto(esc, created_at=now)
 
-        # Compute bound action hash and expiration
-        bound_hash = action_hash(action)
-        expires_at = now + timedelta(seconds=self.config.ttl_seconds)
+            if session is not None:
+                session.add(record)
+                if close_session:
+                    await session.commit()
+                else:
+                    await session.flush()
+            else:
+                self._memory_store[escalation_id] = record
 
-        # Lookup catalog details if available
-        payee_card = None
-        account_card = None
-        if self.catalog is not None:
-            if action.params.payee_id:
-                payee_card = self.catalog.get_payee(action.params.payee_id)
-            account_card = self.catalog.get_account(action.params.from_account)
-
-        mandate_snapshot = None
-        if self.mandate_reader is not None:
-            try:
-                mandate_snapshot = await self.mandate_reader.get(action.mandate_id, tx)
-            except Exception:
-                mandate_snapshot = None
-
-        summary = build_trusted_summary(
-            action=action,
-            payee=payee_card,
-            account=account_card,
-            mandate=mandate_snapshot,
-            assessment=assessment,
-        )
-
-        escalation_id = f"esc_{action.request_id}"
-        reason_codes = tuple(s.reason_code for s in assessment.signals)
-
-        esc = Escalation(
-            escalation_id=escalation_id,
-            request_id=action.request_id,
-            customer_id=action.customer_id,
-            agent_id=action.agent_id,
-            mandate_id=action.mandate_id,
-            action=action,
-            action_hash=bound_hash,
-            trusted_summary=summary,
-            reason_codes=reason_codes,
-            expires_at=expires_at,
-            state=EscalationState.PENDING,
-        )
-
-        record = EscalationRecord.from_dto(esc, created_at=now)
-
-        if session is not None:
-            session.add(record)
-            await session.flush()
-        else:
-            self._memory_store[escalation_id] = record
-
-        return esc
+            return esc
+        except Exception:
+            if close_session and session is not None:
+                await session.rollback()
+            raise
+        finally:
+            if close_session and session is not None:
+                await session.close()
 
     async def get_owned(self, escalation_id: OpaqueId, subject_id: OpaqueId) -> Escalation:
         """Retrieve an owned escalation.
@@ -183,7 +202,7 @@ class PersistentEscalationService:
         if self.session_factory is not None:
             async with self.session_factory() as session:
                 record = await session.get(EscalationRecord, str(escalation_id))
-        else:
+        if record is None:
             record = self._memory_store.get(str(escalation_id))
 
         if record is None or (
@@ -198,27 +217,164 @@ class PersistentEscalationService:
         escalation_id: OpaqueId,
         decision: EscalationDecision,
         subject_id: OpaqueId,
-        tx: Tx,
+        tx: Tx | None = None,
     ) -> Escalation:
         """Atomically decide on a PENDING escalation."""
         session = self._get_session(tx)
-        now = self.clock.now()
+        close_session = False
+        if session is None and self.session_factory is not None:
+            session = self.session_factory()
+            await session.begin()
+            close_session = True
 
-        # Fetch record
-        if session is not None:
-            record = await session.get(EscalationRecord, str(escalation_id))
-        else:
-            record = self._memory_store.get(str(escalation_id))
+        tx_to_use = tx or (
+            SqliteTx(tx_id=f"tx_dec_{uuid.uuid4().hex[:8]}", session=session)
+            if session is not None
+            else None
+        )
 
-        if record is None or record.customer_id != subject_id:
-            raise KeyError(f"Escalation {escalation_id} not found")
+        try:
+            now = self.clock.now()
 
-        # Validate current state
-        if record.state != EscalationState.PENDING.value:
-            if record.state in (
-                EscalationState.APPROVED.value,
-                EscalationState.EXECUTED.value,
-            ):
+            # Fetch record
+            if session is not None:
+                record = await session.get(EscalationRecord, str(escalation_id))
+            else:
+                record = self._memory_store.get(str(escalation_id))
+            if record is None:
+                record = self._memory_store.get(str(escalation_id))
+            if record is None:
+                record = self._memory_store.get(str(escalation_id))
+
+            if record is None or record.customer_id != subject_id:
+                raise KeyError(f"Escalation {escalation_id} not found")
+
+            # Validate current state
+            if record.state != EscalationState.PENDING.value:
+                if record.state in (
+                    EscalationState.APPROVED.value,
+                    EscalationState.EXECUTED.value,
+                ):
+                    raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
+                if record.state == EscalationState.EXPIRED.value:
+                    raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
+                if record.state == EscalationState.CANCELLED.value:
+                    raise ValueError(ReasonCode.E_ESC_CANCELLED.value)
+                if record.state == EscalationState.REJECTED.value:
+                    raise ValueError(ReasonCode.E_ESC_REJECTED.value)
+                raise ValueError(ReasonCode.E_REQ_INVALID.value)
+
+            # Check TTL deadline
+            if _ensure_utc(record.expires_at) <= now:
+                record.state = EscalationState.EXPIRED.value
+                if session is not None:
+                    await session.flush()
+                raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
+
+            new_state = (
+                EscalationState.APPROVED.value
+                if decision == EscalationDecision.APPROVE
+                else EscalationState.REJECTED.value
+            )
+
+            if session is not None:
+                stmt = (
+                    update(EscalationRecord)
+                    .where(
+                        EscalationRecord.escalation_id == str(escalation_id),
+                        EscalationRecord.state == EscalationState.PENDING.value,
+                    )
+                    .values(
+                        state=new_state,
+                        decided_at=now,
+                        decided_by=str(subject_id),
+                    )
+                )
+                res = await session.execute(stmt)
+                if getattr(res, "rowcount", 0) == 0:
+                    raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
+                record = await session.get(EscalationRecord, str(escalation_id))
+                assert record is not None
+            else:
+                record.state = new_state
+                record.decided_at = now
+                record.decided_by = str(subject_id)
+
+            # Emit audit event through the AuditLog port if available
+            if self.audit_log is not None:
+                dto = record.to_dto()
+                event = AuditEvent(
+                    event_type=(
+                        "escalation.approved"
+                        if decision == EscalationDecision.APPROVE
+                        else "escalation.rejected"
+                    ),
+                    request_id=dto.request_id,
+                    customer_id=dto.customer_id,
+                    agent_id=dto.agent_id,
+                    mandate_id=dto.mandate_id,
+                    mandate_hash=dto.action.mandate_hash,
+                    decision="ALLOW" if decision == EscalationDecision.APPROVE else "DENY",
+                    reason_codes=(
+                        (ReasonCode.E_ESC_REJECTED.value,)
+                        if decision == EscalationDecision.REJECT
+                        else ()
+                    ),
+                    safe_payload={
+                        "escalation_id": str(escalation_id),
+                        "decision": str(decision),
+                        "decided_by": str(subject_id),
+                    },
+                    occurred_at=now,
+                )
+                await self.audit_log.append(event, tx_to_use)
+
+            if close_session:
+                await session.commit()
+
+            return record.to_dto()
+        except Exception:
+            if close_session:
+                await session.rollback()
+            raise
+        finally:
+            if close_session:
+                await session.close()
+
+    async def claim_execution(
+        self, escalation_id: OpaqueId, expected_hash: str, tx: Tx | None = None
+    ) -> Escalation:
+        """Atomically claim an APPROVED escalation for execution once."""
+        session = self._get_session(tx)
+        close_session = False
+        if session is None and self.session_factory is not None:
+            session = self.session_factory()
+            await session.begin()
+            close_session = True
+
+        tx_to_use = tx or (
+            SqliteTx(tx_id=f"tx_dec_{uuid.uuid4().hex[:8]}", session=session)
+            if session is not None
+            else None
+        )
+
+        try:
+            now = self.clock.now()
+
+            if session is not None:
+                record = await session.get(EscalationRecord, str(escalation_id))
+            else:
+                record = self._memory_store.get(str(escalation_id))
+            if record is None:
+                record = self._memory_store.get(str(escalation_id))
+
+            if record is None:
+                raise KeyError(f"Escalation {escalation_id} not found")
+
+            if record.action_hash != expected_hash:
+                raise ValueError(ReasonCode.E_ESC_HASH_MISMATCH.value)
+
+            if record.state == EscalationState.EXECUTED.value:
                 raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
             if record.state == EscalationState.EXPIRED.value:
                 raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
@@ -226,188 +382,106 @@ class PersistentEscalationService:
                 raise ValueError(ReasonCode.E_ESC_CANCELLED.value)
             if record.state == EscalationState.REJECTED.value:
                 raise ValueError(ReasonCode.E_ESC_REJECTED.value)
-            raise ValueError(ReasonCode.E_REQ_INVALID.value)
+            if record.state != EscalationState.APPROVED.value:
+                raise ValueError(ReasonCode.E_REQ_INVALID.value)
 
-        # Check TTL deadline
-        if _ensure_utc(record.expires_at) <= now:
-            record.state = EscalationState.EXPIRED.value
-            if session is not None:
-                await session.flush()
-            raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
+            # Validate approval deadline at claim time
+            if _ensure_utc(record.expires_at) <= now:
+                record.state = EscalationState.EXPIRED.value
+                if session is not None:
+                    await session.flush()
+                raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
 
-        new_state = (
-            EscalationState.APPROVED.value
-            if decision == EscalationDecision.APPROVE
-            else EscalationState.REJECTED.value
-        )
-
-        if session is not None:
-            stmt = (
-                update(EscalationRecord)
-                .where(
-                    EscalationRecord.escalation_id == str(escalation_id),
-                    EscalationRecord.state == EscalationState.PENDING.value,
-                )
-                .values(
-                    state=new_state,
-                    decided_at=now,
-                    decided_by=str(subject_id),
-                )
-            )
-            res = await session.execute(stmt)
-            if getattr(res, "rowcount", 0) == 0:
-                raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
-            record = await session.get(EscalationRecord, str(escalation_id))
-            assert record is not None
-        else:
-            record.state = new_state
-            record.decided_at = now
-            record.decided_by = str(subject_id)
-
-        # Emit audit event through the AuditLog port if available
-        if self.audit_log is not None:
-            dto = record.to_dto()
-            event = AuditEvent(
-                event_type=(
-                    "escalation.approved"
-                    if decision == EscalationDecision.APPROVE
-                    else "escalation.rejected"
-                ),
-                request_id=dto.request_id,
-                customer_id=dto.customer_id,
-                agent_id=dto.agent_id,
-                mandate_id=dto.mandate_id,
-                mandate_hash=dto.action.mandate_hash,
-                decision="ALLOW" if decision == EscalationDecision.APPROVE else "DENY",
-                reason_codes=(
-                    (ReasonCode.E_ESC_REJECTED.value,)
-                    if decision == EscalationDecision.REJECT
-                    else ()
-                ),
-                safe_payload={
-                    "escalation_id": str(escalation_id),
-                    "decision": str(decision),
-                    "decided_by": str(subject_id),
-                },
-                occurred_at=now,
-            )
-            await self.audit_log.append(event, tx)
-
-        return record.to_dto()
-
-    async def claim_execution(
-        self, escalation_id: OpaqueId, expected_hash: str, tx: Tx
-    ) -> Escalation:
-        """Atomically claim an APPROVED escalation for execution once."""
-        session = self._get_session(tx)
-        now = self.clock.now()
-
-        if session is not None:
-            record = await session.get(EscalationRecord, str(escalation_id))
-        else:
-            record = self._memory_store.get(str(escalation_id))
-
-        if record is None:
-            raise KeyError(f"Escalation {escalation_id} not found")
-
-        if record.action_hash != expected_hash:
-            raise ValueError(ReasonCode.E_ESC_HASH_MISMATCH.value)
-
-        if record.state == EscalationState.EXECUTED.value:
-            raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
-        if record.state == EscalationState.EXPIRED.value:
-            raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
-        if record.state == EscalationState.CANCELLED.value:
-            raise ValueError(ReasonCode.E_ESC_CANCELLED.value)
-        if record.state == EscalationState.REJECTED.value:
-            raise ValueError(ReasonCode.E_ESC_REJECTED.value)
-        if record.state != EscalationState.APPROVED.value:
-            raise ValueError(ReasonCode.E_REQ_INVALID.value)
-
-        # Validate approval deadline at claim time
-        if _ensure_utc(record.expires_at) <= now:
-            record.state = EscalationState.EXPIRED.value
-            if session is not None:
-                await session.flush()
-            raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
-
-        # Validate live mandate state through injected reader port
-        if self.mandate_reader is not None:
-            try:
-                mandate_snap = await self.mandate_reader.get(record.mandate_id, tx)
-                status_val = (
-                    mandate_snap.status.value
-                    if hasattr(mandate_snap.status, "value")
-                    else str(mandate_snap.status)
-                )
-                if status_val != MandateStatus.ACTIVE.value:
-                    if status_val == MandateStatus.REVOKED.value:
+            # Validate live mandate state through injected reader port
+            if self.mandate_reader is not None:
+                try:
+                    mandate_snap = await self.mandate_reader.get(record.mandate_id, tx_to_use)
+                    status_val = (
+                        mandate_snap.status.value
+                        if hasattr(mandate_snap.status, "value")
+                        else str(mandate_snap.status)
+                    )
+                    if status_val != MandateStatus.ACTIVE.value:
+                        if status_val == MandateStatus.REVOKED.value:
+                            raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+                        if status_val == MandateStatus.SUSPENDED.value:
+                            raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
+                        if status_val == MandateStatus.EXPIRED.value:
+                            raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
                         raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
-                    if status_val == MandateStatus.SUSPENDED.value:
+
+                    valid_from = _ensure_utc(mandate_snap.terms.valid_from)
+                    valid_until = _ensure_utc(mandate_snap.terms.valid_until)
+                    if now < valid_from or now > valid_until:
+                        raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+                except ValueError:
+                    raise
+                except Exception as e:
+                    raise ValueError(ReasonCode.E_MANDATE_REVOKED.value) from e
+
+            # Validate live agent state through injected registry port
+            if self.agent_registry is not None:
+                try:
+                    try:
+                        agent_ident = await self.agent_registry.get(record.agent_id, tx=tx_to_use)
+                    except TypeError:
+                        agent_ident = await self.agent_registry.get(record.agent_id)
+                    agent_status = (
+                        agent_ident.status.value
+                        if hasattr(agent_ident.status, "value")
+                        else str(agent_ident.status)
+                    )
+                    if agent_status != AgentStatus.ACTIVE.value:
                         raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
-                    if status_val == MandateStatus.EXPIRED.value:
-                        raise ValueError(ReasonCode.E_ESC_EXPIRED.value)
-                    raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
+                except ValueError:
+                    raise
+                except Exception as e:
+                    raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value) from e
 
-                valid_from = _ensure_utc(mandate_snap.terms.valid_from)
-                valid_until = _ensure_utc(mandate_snap.terms.valid_until)
-                if now < valid_from or now > valid_until:
-                    raise ValueError(ReasonCode.E_MANDATE_REVOKED.value)
-            except ValueError:
-                raise
-            except Exception as e:
-                raise ValueError(ReasonCode.E_MANDATE_REVOKED.value) from e
+            # Validate remaining budget through injected usage reader port
+            if self.usage_reader is not None:
+                usages = await self.usage_reader.get(record.mandate_id, tx_to_use)
+                dto = record.to_dto()
+                action_amount = dto.action.params.amount_paise
+                for u in usages:
+                    if u.remaining_paise is not None and action_amount > u.remaining_paise:
+                        raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
+                    if u.remaining_count is not None and u.remaining_count <= 0:
+                        raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
 
-        # Validate live agent state through injected registry port
-        if self.agent_registry is not None:
-            try:
-                agent_ident = await self.agent_registry.get(record.agent_id)
-                agent_status = (
-                    agent_ident.status.value
-                    if hasattr(agent_ident.status, "value")
-                    else str(agent_ident.status)
+            if session is not None:
+                stmt = (
+                    update(EscalationRecord)
+                    .where(
+                        EscalationRecord.escalation_id == str(escalation_id),
+                        EscalationRecord.state == EscalationState.APPROVED.value,
+                    )
+                    .values(state=EscalationState.EXECUTED.value)
                 )
-                if agent_status != AgentStatus.ACTIVE.value:
-                    raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
-            except ValueError:
-                raise
-            except Exception as e:
-                raise ValueError(ReasonCode.E_AUTH_AGENT_SUSPENDED.value) from e
+                res = await session.execute(stmt)
+                if getattr(res, "rowcount", 0) == 0:
+                    raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
+                record = await session.get(EscalationRecord, str(escalation_id))
+                assert record is not None
+            else:
+                record.state = EscalationState.EXECUTED.value
 
-        # Validate remaining budget through injected usage reader port
-        if self.usage_reader is not None:
-            usages = await self.usage_reader.get(record.mandate_id, tx)
-            dto = record.to_dto()
-            action_amount = dto.action.params.amount_paise
-            for u in usages:
-                if u.remaining_paise is not None and action_amount > u.remaining_paise:
-                    raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
-                if u.remaining_count is not None and u.remaining_count <= 0:
-                    raise ValueError(ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value)
+            if close_session:
+                await session.commit()
 
-        if session is not None:
-            stmt = (
-                update(EscalationRecord)
-                .where(
-                    EscalationRecord.escalation_id == str(escalation_id),
-                    EscalationRecord.state == EscalationState.APPROVED.value,
-                )
-                .values(state=EscalationState.EXECUTED.value)
-            )
-            res = await session.execute(stmt)
-            if getattr(res, "rowcount", 0) == 0:
-                raise ValueError(ReasonCode.E_ESC_ALREADY_CONSUMED.value)
-            record = await session.get(EscalationRecord, str(escalation_id))
-            assert record is not None
-        else:
-            record.state = EscalationState.EXECUTED.value
-
-        return record.to_dto()
+            return record.to_dto()
+        except Exception:
+            if close_session:
+                await session.rollback()
+            raise
+        finally:
+            if close_session:
+                await session.close()
 
     async def execute_approved(
         self,
         escalation_id: OpaqueId,
-        tx: Tx,
+        tx: Tx | None = None,
         execution_port: ExecutionPort | None = None,
     ) -> ExecutionResult:
         """Handoff an approved escalation to Member A's ExecutionPort.
@@ -424,8 +498,12 @@ class PersistentEscalationService:
             raise ValueError(ReasonCode.E_SERVICE_UNAVAILABLE.value)
 
         session = self._get_session(tx)
+        record = None
         if session is not None:
             record = await session.get(EscalationRecord, str(escalation_id))
+        elif self.session_factory is not None:
+            async with self.session_factory() as sess:
+                record = await sess.get(EscalationRecord, str(escalation_id))
         else:
             record = self._memory_store.get(str(escalation_id))
 
@@ -477,6 +555,20 @@ class PersistentEscalationService:
                 )
             )
             await session.execute(stmt)
+        elif self.session_factory is not None:
+            async with self.session_factory() as sess:
+                stmt = (
+                    update(EscalationRecord)
+                    .where(EscalationRecord.escalation_id == str(escalation_id))
+                    .values(
+                        state=new_state,
+                        result_json=result_json,
+                        audit_ref_seq=seq,
+                        audit_ref_hash=entry_hash,
+                    )
+                )
+                await sess.execute(stmt)
+                await sess.commit()
         else:
             record.state = new_state
             record.result_json = result_json

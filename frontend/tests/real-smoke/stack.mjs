@@ -56,6 +56,7 @@ export async function disposableStack() {
     child.once("exit", () => { stopped = true; });
     let diagnostic = "";
     child.stderr.on("data", (chunk) => {
+      console.error("SERVER STDERR:", chunk.toString());
       // Only these known provider names may reach stdout. Drop raw launcher diagnostics.
       diagnostic = (diagnostic + chunk).slice(-4096);
       const line = diagnostic.match(/Missing required real providers: ([a-z_, ]+)/);
@@ -101,7 +102,10 @@ export async function disposableStack() {
           "--payee-id", "BILL-ELEC", "--amount-paise", "480000", "--task", "Pay electricity bill",
           "--category", "utilities", "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
         { ...options, timeout: 30000 }));
-      } catch { throw new SmokeFailure("B SDK pay-bill failed; signed action outcome unconfirmed"); }
+      } catch (err) {
+        console.error("DEBUG EXEC ERROR stdout:", err.stdout, "stderr:", err.stderr);
+        throw new SmokeFailure("B SDK pay-bill failed; signed action outcome unconfirmed");
+      }
       requireResult(stdout.trim(), "B SDK pay-bill produced no result");
       const result = JSON.parse(stdout);
       requireResult(result.status === "PENDING_APPROVAL" && result.decision === "ESCALATE", "signed payment did not return pending approval");
