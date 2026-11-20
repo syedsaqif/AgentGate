@@ -149,7 +149,7 @@ class PolicyEvaluator:
 
         # Map existing usage by grant_id
         usage_by_grant: dict[str, UsageSnapshot] = {
-            u.grant_id: u for u in resolved_usage
+            u.grant_id: u for u in resolved_usage if hasattr(u, "grant_id")
         }
 
         is_money_out = action_type_str in (

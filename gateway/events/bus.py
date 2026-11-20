@@ -18,6 +18,18 @@ class EventItem:
     data: dict[str, Any]
     timestamp: datetime
 
+    @property
+    def customer_id(self) -> str | None:
+        return self.data.get("customer_id")
+
+    @property
+    def agent_id(self) -> str | None:
+        return self.data.get("agent_id")
+
+    @property
+    def request_id(self) -> str | None:
+        return self.data.get("request_id")
+
 
 class EventBus:
     """In-process asynchronous event bus with bounded history for replay.
@@ -76,6 +88,18 @@ class EventBus:
     def get_since(self, last_event_id: int) -> list[EventItem]:
         """Return history events with event_id > last_event_id."""
         return [item for item in self._history if item.event_id > last_event_id]
+
+    def is_evicted(self, last_event_id: int) -> bool:
+        """Check if any events between last_event_id and oldest retained event were evicted."""
+        if not self._history:
+            return last_event_id < self._seq
+        oldest_id = self._history[0].event_id
+        return last_event_id < oldest_id - 1
+
+    def clear(self) -> None:
+        """Clear history and reset sequence counter (used for dev/test reset)."""
+        self._history.clear()
+        self._seq = 0
 
     @property
     def latest_seq(self) -> int:

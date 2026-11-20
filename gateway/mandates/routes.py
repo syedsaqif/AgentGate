@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from contracts.common import HumanRole
@@ -154,4 +155,52 @@ async def revoke_mandate_endpoint(
         mandate_id=mandate_id,
         status="REVOKED",
         audit_ref=audit_ref,
+    )
+
+
+@router.get("/bootstrap")
+async def customer_bootstrap(
+    customer_id: Annotated[str, Depends(get_current_customer)],
+    deps: Annotated[Dependencies, Depends(get_deps)],
+) -> JSONResponse:
+    """Bootstrap data for authenticated customer.
+
+    Returns authenticated customer's own accounts, biller/payee catalog, and
+    delegable registered agents. Customer isolation is strictly enforced.
+    """
+    accounts = []
+    payees = []
+    agents = []
+
+    if deps.catalog is not None:
+        if hasattr(deps.catalog, "list_accounts_for_customer"):
+            acc_list = await deps.catalog.list_accounts_for_customer(customer_id)
+            accounts = [a.model_dump(mode="json") for a in acc_list]
+        elif hasattr(deps.catalog, "accounts"):
+            accounts = [
+                a.model_dump(mode="json")
+                for a in deps.catalog.accounts.values()
+                if getattr(a, "customer_id", None) == customer_id
+            ]
+
+        if hasattr(deps.catalog, "list_payees"):
+            payee_list = await deps.catalog.list_payees()
+            payees = [p.model_dump(mode="json") for p in payee_list]
+        elif hasattr(deps.catalog, "payees"):
+            payees = [
+                p.model_dump(mode="json")
+                for p in deps.catalog.payees.values()
+            ]
+
+    if deps.agent_registry is not None:
+        agent_list = await deps.agent_registry.list_public()
+        agents = [ag.model_dump(mode="json") for ag in agent_list]
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "accounts": accounts,
+            "payees": payees,
+            "agents": agents,
+        },
     )

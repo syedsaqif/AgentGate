@@ -28,3 +28,8 @@ class FrozenClock(Clock):
 
     def advance(self, *, seconds: int) -> None:
         self.value += timedelta(seconds=seconds)
+
+    def set_time(self, new_value: datetime) -> None:
+        if new_value.tzinfo is None:
+            new_value = new_value.replace(tzinfo=UTC)
+        self.value = new_value.astimezone(UTC)
