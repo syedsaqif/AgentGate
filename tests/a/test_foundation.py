@@ -78,9 +78,24 @@ async def test_app_creation_test_profile(app_with_test_routes: Any) -> None:
 
 
 def test_app_creation_real_profile_rejects_fakes() -> None:
-    """Startup must refuse to boot under profile 'real' when fake providers are present."""
+    """Startup must refuse to boot under 'real' when fake or missing providers are present."""
     with pytest.raises(RuntimeError, match="Refusing startup in profile 'real'"):
-        create_app(profile="real")
+        create_app(profile="real", overrides={"human_auth": None})
+
+
+def test_app_creation_real_profile_succeeds_with_real_providers() -> None:
+    """Startup must succeed under profile 'real' when all real providers are present."""
+    app = create_app(profile="real")
+    assert app.state.deps.provider_modes() == {
+        "identity": "real",
+        "human_auth": "real",
+        "audit": "real",
+        "risk": "real",
+        "escalation": "real",
+        "bank": "real",
+        "policy": "real",
+        "mandates": "real",
+    }
 
 
 @pytest.mark.asyncio

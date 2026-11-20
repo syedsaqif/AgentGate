@@ -45,7 +45,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if config.database.gateway_url:
         engine = getattr(app.state, "engine", None)
         if engine is None:
-            engine = create_db_engine(config.database.gateway_url)
+            gateway_url = config.database.gateway_url
+            if config.gateway_db and os.path.isabs(config.gateway_db):
+                gateway_url = f"sqlite+aiosqlite:///{config.gateway_db.replace('\\', '/')}"
+            engine = create_db_engine(gateway_url)
             session_factory = create_session_factory(engine)
             app.state.engine = engine
             app.state.session_factory = session_factory
@@ -78,6 +81,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps.reservation_port = ReservationManager(deps.mandate_reader)
         deps.extra["reservation_manager"] = deps.reservation_port
 
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
+
     if (
         getattr(deps, "execution_service", None) is None
         and deps.unit_of_work is not None
@@ -97,13 +103,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             mandate_reader=deps.mandate_reader,
             clock=deps.clock,
             session_factory=session_factory,
+            event_bus=deps.event_bus,
         )
         deps.execution_service = exec_srv
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
-
-    if deps.event_bus is None:
-        deps.event_bus = EventBus()
 
     if (
         deps.lifecycle is None
@@ -171,8 +175,14 @@ def create_app(
 
     # If DB URL provided, set engine & session factory so unit tests without lifespan have DB
     if config.database.gateway_url:
-        engine = create_db_engine(config.database.gateway_url)
-        session_factory = create_session_factory(engine)
+        engine = deps.extra.get("engine")
+        session_factory = deps.extra.get("session_factory")
+        if engine is None:
+            gateway_url = config.database.gateway_url
+            if config.gateway_db and os.path.isabs(config.gateway_db):
+                gateway_url = f"sqlite+aiosqlite:///{config.gateway_db.replace('\\', '/')}"
+            engine = create_db_engine(gateway_url)
+            session_factory = create_session_factory(engine)
         app.state.engine = engine
         app.state.session_factory = session_factory
         if deps.unit_of_work is None:
@@ -204,6 +214,9 @@ def create_app(
         deps.reservation_port = ReservationManager(deps.mandate_reader)
         deps.extra["reservation_manager"] = deps.reservation_port
 
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
+
     if (
         getattr(deps, "execution_service", None) is None
         and deps.unit_of_work is not None
@@ -223,13 +236,11 @@ def create_app(
             mandate_reader=deps.mandate_reader,
             clock=deps.clock,
             session_factory=session_factory,
+            event_bus=deps.event_bus,
         )
         deps.execution_service = exec_srv
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
-
-    if deps.event_bus is None:
-        deps.event_bus = EventBus()
 
     if (
         deps.lifecycle is None
@@ -251,6 +262,18 @@ def create_app(
 
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
+
+    # Enable CORS for browser UI access
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
 
     # Register uniform error envelope handlers
     register_error_handlers(app)

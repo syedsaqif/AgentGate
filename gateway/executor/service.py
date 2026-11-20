@@ -50,6 +50,7 @@ class ExecutionService(ExecutionPort):
         mandate_reader: MandateReader,
         clock: Clock,
         session_factory: Any,
+        event_bus: Any = None,
     ) -> None:
         self.unit_of_work = unit_of_work
         self.action_store = action_store
@@ -59,6 +60,7 @@ class ExecutionService(ExecutionPort):
         self.mandate_reader = mandate_reader
         self.clock = clock
         self.session_factory = session_factory
+        self.event_bus = event_bus
 
     async def prepare_action(
         self,
@@ -236,13 +238,31 @@ class ExecutionService(ExecutionPort):
                     agent_id=action.agent_id,
                     mandate_id=action.mandate_id,
                     mandate_hash=action.mandate_hash,
-                    safe_payload={"bank_operation_id": bank_res.bank_operation_id},
+                    safe_payload={
+                        "bank_operation_id": bank_res.bank_operation_id,
+                        "bank_result": bank_res.model_dump(mode="json"),
+                    },
                     occurred_at=self.clock.now(),
                 )
                 final_audit = await self.audit_log.append(exec_event, tx=tx)
                 if rec:
                     rec.audit_seq = final_audit.seq
                     rec.audit_hash = final_audit.entry_hash
+
+                if self.event_bus is not None:
+                    await self.event_bus.publish(
+                        "bank.executed",
+                        {
+                            "request_id": request_id,
+                            "customer_id": action.customer_id,
+                            "agent_id": action.agent_id,
+                            "status": "EXECUTED",
+                            "audit_ref": {
+                                "seq": final_audit.seq,
+                                "entry_hash": final_audit.entry_hash,
+                            },
+                        },
+                    )
 
                 return ExecutionResult(
                     request_id=request_id,

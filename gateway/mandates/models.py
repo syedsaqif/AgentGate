@@ -12,6 +12,7 @@ from contracts.core_models import (
     AccountCard,
     Grant,
     MandateSnapshot,
+    MandateTerms,
     PayeeCard,
     StepUpRules,
     UsageSnapshot,
@@ -51,8 +52,10 @@ class CreateMandateResponse(ContractModel):
 
 
 class CustomerMandateItem(ContractModel):
-    mandate: MandateSnapshot
+    terms: MandateTerms
+    status: str
     usage: tuple[UsageSnapshot, ...]
+    mandate: MandateSnapshot | None = None
 
 
 class CustomerMandateListResponse(ContractModel):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -389,8 +389,33 @@ async def process_money_action(
             status_code=503,
         )
 
+    evidence_payload: dict[str, Any] = {}
+    try:
+        import hashlib
+
+        from contracts.audit_models import SignedRequestEvidence
+        from gateway.audit.evidence import build_request_evidence_payload
+
+        dpop_jws = request.headers.get("DPoP") or request.headers.get("dpop") or ""
+        b_sha256 = f"sha256:{hashlib.sha256(raw_bytes).hexdigest()}"
+        if agent_pub is not None and snapshot is not None:
+            signed_req = SignedRequestEvidence(
+                proof_jws=dpop_jws,
+                proof_jti=auth_ctx.proof_jti or "",
+                body_sha256=b_sha256,
+                action_hash=canonical_action.action_hash,
+            )
+            evidence_payload = build_request_evidence_payload(
+                mandate=snapshot,
+                agent=agent_pub,
+                action=canonical_action,
+                signed_request=signed_req,
+            )
+    except Exception:
+        pass
+
     audit_event = AuditEvent(
-        event_type=f"payment.{final_decision.value.lower()}",
+        event_type="policy.decision",
         request_id=canonical_action.request_id,
         customer_id=canonical_action.customer_id,
         agent_id=canonical_action.agent_id,
@@ -407,6 +432,7 @@ async def process_money_action(
             "from_account": canonical_action.params.from_account,
             "amount_paise": canonical_action.params.amount_paise,
             "action_type": str(canonical_action.action_type),
+            **evidence_payload,
         },
         occurred_at=deps.clock.now(),
     )
