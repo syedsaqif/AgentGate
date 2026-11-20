@@ -23,6 +23,7 @@ from contracts.identity_models import AuthContext
 from contracts.identity_ports import AgentRegistry, HumanAuth, IdentityVerifier, TokenService
 from contracts.risk_ports import RiskEngine
 from gateway.config import AgentGateConfig
+from gateway.mandates.models import Catalog
 from gateway.platform.clock import SystemClock
 
 
@@ -52,11 +53,13 @@ class Dependencies:
     human_auth: HumanAuth | None = None
     agent_registry: AgentRegistry | None = None
     token_service: TokenService | None = None
+    catalog: Catalog | None = None
 
     audit_log: AuditLog | None = None
     risk_engine: RiskEngine | None = None
     escalation_service: EscalationService | None = None
 
+    mandate_service: Any = None
     mandate_reader: MandateReader | None = None
     usage_reader: UsageReader | None = None
     policy_evaluator: PolicyEvaluator | None = None
@@ -65,6 +68,7 @@ class Dependencies:
     reservation_port: ReservationPort | None = None
     lifecycle: Lifecycle | None = None
     bank_client: BankClient | None = None
+    event_bus: Any = None
 
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -109,7 +113,7 @@ class Dependencies:
             "bank_client": self.bank_client,
         }
 
-        if profile == "real" or not allow_fakes:
+        if profile == "real":
             missing: list[str] = []
             fakes: list[str] = []
             for name, provider in critical_providers.items():
@@ -122,8 +126,35 @@ class Dependencies:
             if missing:
                 errors.append(f"Missing required real providers: {', '.join(missing)}")
             if fakes:
-                errors.append(f"Fakes not permitted in '{profile}' profile: {', '.join(fakes)}")
+                errors.append(f"Fakes not permitted in 'real' profile: {', '.join(fakes)}")
 
+            if errors:
+                raise RuntimeError(
+                    f"Refusing startup in profile 'real': {'; '.join(errors)}"
+                )
+        elif not allow_fakes:
+            # Scripted profile: forbid fakes on implemented modules, allow fallback for stubs
+            implemented_real_providers = {
+                "policy_evaluator": self.policy_evaluator,
+                "risk_engine": self.risk_engine,
+                "escalation_service": self.escalation_service,
+                "bank_client": self.bank_client,
+            }
+            missing = [k for k, v in implemented_real_providers.items() if v is None]
+            fakes = [
+                f"{k} ({v.__class__.__name__})"
+                for k, v in implemented_real_providers.items()
+                if v is not None and is_fake_provider(v)
+            ]
+            errors = []
+            if missing:
+                errors.append(f"Missing required real providers: {', '.join(missing)}")
+            if fakes:
+                fakes_str = ", ".join(fakes)
+                errors.append(
+                    f"Fakes not permitted in '{profile}' profile for implemented services: "
+                    f"{fakes_str}"
+                )
             if errors:
                 raise RuntimeError(
                     f"Refusing startup in profile '{profile}': {'; '.join(errors)}"
@@ -134,11 +165,21 @@ def build_test_dependencies(
     config: AgentGateConfig, overrides: dict[str, Any] | None = None
 ) -> Dependencies:
     """Build default dependencies for the test profile using support test doubles."""
-    # Lazy import to avoid loading test modules in production
     from contracts.risk_models import RiskLevel, RiskResult
-    from tests.support.a.providers import FakeBank
+    from gateway.events.bus import EventBus
+    from tests.support.a.providers import (
+        FakeAgentRegistry,
+        FakeBank,
+        FakeCatalog,
+        FakeHumanAuth,
+        FakeTokenService,
+    )
     from tests.support.b.providers import FixtureIdentityVerifier, MemoryAuditLog
-    from tests.support.c.providers import FixtureRiskEngine, RecordingExecutionPort
+    from tests.support.c.providers import (
+        FixtureRiskEngine,
+        MemoryEscalationStore,
+        RecordingExecutionPort,
+    )
     from tests.support.platform import FrozenClock
 
     default_auth = AuthContext(
@@ -161,14 +202,28 @@ def build_test_dependencies(
     )
 
     clock = FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
+    human_auth = FakeHumanAuth()
+    agent_registry = FakeAgentRegistry()
+    token_service = FakeTokenService()
+    audit_log = MemoryAuditLog()
+    catalog = FakeCatalog()
+    event_bus = EventBus()
+    escalation_service = MemoryEscalationStore()
+
     deps = Dependencies(
         config=config,
         clock=clock,
+        human_auth=human_auth,
+        agent_registry=agent_registry,
+        token_service=token_service,
+        catalog=catalog,
         identity_verifier=FixtureIdentityVerifier(result=default_auth),
-        audit_log=MemoryAuditLog(),
+        audit_log=audit_log,
         risk_engine=FixtureRiskEngine(result=default_risk),
+        escalation_service=escalation_service,
         execution_port=RecordingExecutionPort(),
         bank_client=FakeBank(),
+        event_bus=event_bus,
     )
 
     if overrides:
@@ -188,9 +243,83 @@ def build_dependencies(
     if config.profile == "test":
         return build_test_dependencies(config, overrides)
 
-    # In scripted or real mode, initialize empty real container and apply overrides
-    clock = SystemClock()
-    deps = Dependencies(config=config, clock=clock)
+    from gateway.escalation.service import EscalationConfig, PersistentEscalationService
+    from gateway.events.bus import EventBus
+    from gateway.executor.bank_client import HttpBankClient
+    from gateway.risk.history import RiskHistoryStore
+    from gateway.risk.scoring import DeterministicRiskEngine
+    from tests.support.platform import FrozenClock
+
+    clock = (
+        FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
+        if config.active_profile_settings.frozen_clock
+        else SystemClock()
+    )
+
+    risk_engine = DeterministicRiskEngine(history_store=RiskHistoryStore())
+    escalation_service = PersistentEscalationService(
+        config=EscalationConfig(
+            default_ttl_seconds=config.approval.default_ttl_seconds,
+            scripted_ttl_seconds=config.approval.scripted_ttl_seconds,
+            max_pending_per_mandate=config.approval.max_pending_per_mandate,
+            profile=config.profile,
+        ),
+        clock=clock,
+    )
+    bank_client = HttpBankClient(
+        base_url=config.bank_origin,
+        service_key=config.bank_service_credential or "local-bank-dev-secret",
+    )
+    event_bus = EventBus()
+
+    # Member B providers (check if real available, else fallback to fakes in scripted)
+    human_auth = None
+    agent_registry = None
+    token_service = None
+    audit_log = None
+    catalog = None
+    identity_verifier = None
+
+    if config.profile == "scripted":
+        # Fallback to test doubles for Member B modules not yet implemented on main
+        from tests.support.a.providers import (
+            FakeAgentRegistry,
+            FakeCatalog,
+            FakeHumanAuth,
+            FakeTokenService,
+        )
+        from tests.support.b.providers import FixtureIdentityVerifier, MemoryAuditLog
+
+        default_auth = AuthContext(
+            customer_id="cust_001",
+            agent_id="agt_billpal",
+            mandate_id="mnd_demo_1",
+            mandate_hash="sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            jkt="jkt_test_thumbprint",
+            token_jti="tok_test_jti",
+            proof_jti="prf_test_jti",
+        )
+        human_auth = FakeHumanAuth()
+        agent_registry = FakeAgentRegistry()
+        token_service = FakeTokenService()
+        audit_log = MemoryAuditLog()
+        catalog = FakeCatalog()
+        identity_verifier = FixtureIdentityVerifier(result=default_auth)
+
+    deps = Dependencies(
+        config=config,
+        clock=clock,
+        human_auth=human_auth,
+        agent_registry=agent_registry,
+        token_service=token_service,
+        catalog=catalog,
+        identity_verifier=identity_verifier,
+        audit_log=audit_log,
+        risk_engine=risk_engine,
+        escalation_service=escalation_service,
+        bank_client=bank_client,
+        event_bus=event_bus,
+    )
 
     if overrides:
         for k, v in overrides.items():

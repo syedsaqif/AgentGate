@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from contracts.common import ActionType, RiskLevel
+from contracts.common import ActionType, FinalDecision, RiskLevel
 from contracts.core_models import ActionParams, CanonicalAction, Intent
 from contracts.escalation_models import EscalationDecision, EscalationState
 from contracts.reason_codes import ReasonCode
@@ -64,7 +64,7 @@ def _make_assessment(score: int = 50) -> RiskResult:
     return RiskResult(
         score=score,
         level=RiskLevel.MEDIUM,
-        recommended="ESCALATE",
+        recommended=FinalDecision.ESCALATE,
         signals=(
             RiskSignal(
                 name="amount_outlier",

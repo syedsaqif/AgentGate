@@ -65,9 +65,15 @@ class AgentGateConfig(BaseSettings):
 
     profiles: dict[str, ProfileSettings] = Field(
         default_factory=lambda: {
-            "test": ProfileSettings(allow_fakes=True, allow_dev_controls=True, frozen_clock=True),
-            "scripted": ProfileSettings(allow_fakes=False, allow_dev_controls=True, frozen_clock=True),
-            "real": ProfileSettings(allow_fakes=False, allow_dev_controls=False, frozen_clock=False),
+            "test": ProfileSettings(
+                allow_fakes=True, allow_dev_controls=True, frozen_clock=True
+            ),
+            "scripted": ProfileSettings(
+                allow_fakes=False, allow_dev_controls=True, frozen_clock=True
+            ),
+            "real": ProfileSettings(
+                allow_fakes=False, allow_dev_controls=False, frozen_clock=False
+            ),
         }
     )
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -95,7 +101,8 @@ class AgentGateConfig(BaseSettings):
                     yaml_data = loaded
 
         # Overlay explicitly passed profile or environment profile
-        target_profile = profile or os.getenv("AGENTGATE_PROFILE") or yaml_data.get("default_profile", "test")
+        env_profile = os.getenv("AGENTGATE_PROFILE")
+        target_profile = profile or env_profile or yaml_data.get("default_profile", "test")
         init_kwargs: dict[str, Any] = {**yaml_data}
         init_kwargs["profile"] = target_profile
         if overrides:

@@ -153,11 +153,13 @@ class RecordingAuditLog:
         return AuditRef(seq=seq, entry_hash=f"{seq:064x}")
 
     async def verify(self, anchor: AuditRef | None = None) -> VerifyReport:
+        seq = len(self.events)
         return VerifyReport(
             valid=True,
-            checked_count=len(self.events),
-            first_mismatch_seq=None,
-            reason="All entries valid in memory log",
+            entries_checked=seq,
+            head_seq=seq,
+            head_hash="0" * 64,
+            anchored_through_seq=seq,
         )
 
     async def checkpoint(self) -> AuditRef:
@@ -165,13 +167,7 @@ class RecordingAuditLog:
         return AuditRef(seq=seq, entry_hash=f"{seq:064x}")
 
     async def evidence(self, request_id: OpaqueId) -> EvidenceBundle:
-        return EvidenceBundle(
-            request_id=request_id,
-            timestamp=datetime.now(UTC),
-            events=tuple(self.events),
-            checkpoints=(),
-            signer_key_id="key_test",
-        )
+        raise NotImplementedError("evidence not implemented on RecordingAuditLog")
 
 
 # Alias for backward compatibility

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from contracts.core_models import BankResult, BankStatus, CanonicalAction
@@ -163,3 +165,74 @@ class HttpBankClient(BankClient):
             bank_idempotency_key=bank_idempotency_key,
             reason_code=ReasonCode.E_BANK_UNAVAILABLE.value,
         )
+
+    async def get_balance(self, account_id: str, customer_id: str) -> dict[str, Any]:
+        """Fetch account balance from bank mock for verified customer."""
+        async with self._client() as client:
+            try:
+                res = await client.get(
+                    f"/bank/accounts/{account_id}/balance",
+                    params={"customer_id": customer_id},
+                )
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise AgentGateError(
+                    code=ReasonCode.E_BANK_UNAVAILABLE,
+                    message="Bank unavailable",
+                    status_code=502,
+                ) from exc
+
+        if res.status_code == 200:
+            return res.json()
+        if res.status_code == 404:
+            raise AgentGateError(
+                code=ReasonCode.E_POLICY_ACCOUNT_NOT_ALLOWED,
+                message=f"Account '{account_id}' not found for customer",
+                status_code=404,
+            )
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank unavailable",
+            status_code=502,
+        )
+
+    async def get_transactions(
+        self,
+        account_id: str,
+        customer_id: str,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch ledger transactions from bank mock for verified customer."""
+        params: dict[str, Any] = {"customer_id": customer_id, "limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+
+        async with self._client() as client:
+            try:
+                res = await client.get(
+                    f"/bank/accounts/{account_id}/transactions",
+                    params=params,
+                )
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                raise AgentGateError(
+                    code=ReasonCode.E_BANK_UNAVAILABLE,
+                    message="Bank unavailable",
+                    status_code=502,
+                ) from exc
+
+        if res.status_code == 200:
+            return res.json()
+        if res.status_code == 404:
+            raise AgentGateError(
+                code=ReasonCode.E_POLICY_ACCOUNT_NOT_ALLOWED,
+                message=f"Account '{account_id}' not found for customer",
+                status_code=404,
+            )
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank unavailable",
+            status_code=502,
+        )
+
+    balance = get_balance
+    transactions = get_transactions
