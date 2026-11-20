@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { deepStrictEqual } from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { disposableStack, frontend, requireResult, SmokeFailure } from "./stack.mjs";
@@ -16,7 +17,7 @@ async function step(name, action, dependency = true) {
     return result ?? true;
   } catch (error) {
     process.exitCode = 1;
-    console.log(`FAIL     ${name}: ${error instanceof SmokeFailure ? error.message : `${error?.message || "expected operation did not complete"}`}`);
+    console.log(`FAIL     ${name}: ${error instanceof SmokeFailure ? error.message : "expected operation did not complete"}`);
   }
 }
 
@@ -72,19 +73,22 @@ async function run() {
   try {
     await step("gateway seed", () => stack.seed());
     const sdk = await step("B SDK signed payment command", () => stack.checkSdk());
-    const bank = await step("isolated simulated bank startup", async () => {
-      requireResult((await stack.bank()).info.title === "AgentGate Mock Bank", "unexpected bank application");
-    });
-    let receivedReadiness = false;
     const ready = await step("gateway GET /health/ready", async () => {
       const r = await stack.ready();
-      receivedReadiness = true;
       const names = ["identity", "human_auth", "audit", "risk", "escalation", "bank", "policy", "mandates"];
       const modes = names.map((key) => [key, ["real", "fake", "unconfigured"].includes(r.providers?.[key]) ? r.providers[key] : "unknown"]);
       console.log("Readiness", ["real", "test", "scripted"].includes(r.profile) ? r.profile : "unknown", Object.fromEntries(modes));
       requireResult(r.status === "ready" && r.profile === "real" && r.contract_version === "1.0.0"
         && modes.every(([, mode]) => mode === "real"), "gateway did not report ready real providers for IC0");
     });
+    const bank = await step("isolated simulated bank startup", async () => {
+      requireResult((await stack.bank()).info.title === "AgentGate Mock Bank", "unexpected bank application");
+    }, !!ready);
+    const opening = await step("fresh bank balance and no existing debits", () => {
+      const snapshot = stack.bankSnapshot();
+      requireResult(snapshot.balance === 12500000 && snapshot.debits.length === 0, "bank state is not fresh");
+      return snapshot;
+    }, !!bank);
     process.env.VITE_GATEWAY_ORIGIN = stack.gateway;
     vite = await createServer({ root: frontend, mode: "real", logLevel: "silent", server: { host: "127.0.0.1", port: 0, open: false } });
     await vite.listen();
@@ -98,25 +102,35 @@ async function run() {
       });
       context.setDefaultTimeout(7000);
       const page = await context.newPage();
-      page.on("console", (msg) => console.log("PAGE CONSOLE:", msg.type(), msg.text()));
-      page.on("pageerror", (err) => console.log("PAGE ERROR:", err));
       await page.goto(origin + "/" + role);
       await button(page, "Sign in").waitFor();
       requireResult(await page.locator(".mock-mode").count() === 0, "unexpected fixture mode");
       return page;
     }
     const customer = await step("Chromium /customer", () => workspace("customer"));
-    const pin = process.env.D06_CUSTOMER_PIN ?? "4821"; // public disposable seed, test process only
-    const loginAllowed = ready || !receivedReadiness;
-    const signedIn = await step("Customer login", () => login(customer, "customer", pin, "cust_001", stack.gateway), !!(customer && loginAllowed));
+    const pin = stack.customerPin;
+    const signedIn = await step("Customer login", () => login(customer, "customer", pin, "cust_001", stack.gateway), !!(customer && ready));
     const bootstrap = await step("Customer bootstrap", () => customer.getByRole("heading", { name: "Your accounts" }).waitFor(), !!signedIn);
+    const ops = await step("Chromium /ops in separate context", () => workspace("ops"));
+    const operator = await step("Ops login and authenticated stream", async () => {
+      await login(ops, "ops", stack.opsPassword, stack.opsId, stack.gateway);
+      await ops.getByText("Live stream connected.", { exact: true }).waitFor();
+      await ops.getByText("agt_billpal", { exact: true }).waitFor();
+    }, !!(ops && ready));
     const mandate = await step("create Customer mandate", () => mandateForm(customer, stack.gateway, pin), !!(bootstrap && ready));
     if (mandate) console.log("Mandate", mandate);
     const payment = await step("SDK signed S9 pending payment", async () => {
       const response = await stack.pay(mandate);
       return { request: publicId(response.request_id), escalation: publicId(response.escalation_id) };
-    }, !!(mandate && bank && sdk));
+    }, !!(mandate && opening && sdk));
     if (payment) console.log("Request", payment.request, "escalation", payment.escalation);
+    await step("same request in the Ops live decision feed", async () => {
+      const feed = ops.getByRole("region", { name: "Live decision feed" });
+      const item = feed.getByRole("listitem").filter({ has: ops.getByText(payment.request, { exact: true }) });
+      await item.getByText("ESCALATE", { exact: true }).waitFor();
+      requireResult(/^\d+$/.test(await item.locator("dl div").filter({ hasText: "Risk score" }).locator("dd").innerText()),
+        "Ops decision omitted its risk score");
+    }, !!(operator && payment));
     const card = await step("matching pending inbox item", async () => {
       await button(customer, "Refresh inbox").click();
       const item = customer.getByRole("article").filter({ has: customer.getByText(payment.request, { exact: true }) });
@@ -126,12 +140,13 @@ async function run() {
     }, !!payment);
     const decision = await step("approve once in Customer browser", async () => {
       // The app opens its authenticated stream on workspace mount, before the decision POST.
-      await customer.getByText(/Customer receipt stream connected|Customer receipt stream unavailable|Receipt stream disconnected|Live receipts resumed/).first().waitFor();
+      await customer.getByText("Customer receipt stream connected.", { exact: true }).waitFor();
       await card.getByLabel("Approval PIN").fill(pin);
       const path = `/v1/customer/escalations/${payment.escalation}/decision`;
       let posts = 0;
       customer.on("request", (req) => { if (req.url() === stack.gateway + path && req.method() === "POST") posts++; });
       const response = await exchange(customer, stack.gateway, path, "POST", () => button(card, "Approve").click(), [200, 202]);
+      console.log(`Decision HTTP ${response.status()}`);
       return { response, posts: () => posts };
     }, !!card);
     const receipt = await step("Customer-visible execution and matching receipt", async () => {
@@ -144,11 +159,13 @@ async function run() {
       requireResult(match && decision.posts() === 1, "missing receipt or repeated browser decision");
       if (!accepted) {
         const response = await decision.response.json();
-        requireResult(response.request_id === payment.request && response.result?.status === "EXECUTED"
+        requireResult(response.escalation_id === payment.escalation && response.decision === "APPROVE"
+          && response.request_id === payment.request && response.result?.status === "EXECUTED"
           && response.result.audit_ref?.seq === Number(match[1]) && response.result.audit_ref.entry_hash === match[2],
         "Customer receipt did not match the gateway decision");
+        await row.getByText("Customer receipt stream confirmed this receipt.", { exact: true }).waitFor();
       }
-      console.log(`Customer receipt via ${accepted ? "202 + Customer SSE" : "decision response"}: seq ${match[1]}, hash ${match[2]}`);
+      console.log(`Customer receipt via ${accepted ? "202 + Customer SSE" : "decision response and Customer SSE"}: seq ${match[1]}, hash ${match[2]}`);
       return { seq: Number(match[1]), entry_hash: match[2] };
     }, !!decision);
     const revoked = await step("revoke same mandate and refetch REVOKED", async () => {
@@ -166,33 +183,76 @@ async function run() {
       requireResult(revoked.usage.length === 1 && revoked.usage[0].committed_count === 1
         && revoked.usage[0].committed_paise === 480000 && revoked.usage[0].reserved_count === 0
         && revoked.usage[0].reserved_paise === 0 && decision.posts() === 1, "mandate usage or decision count disagreed");
+      console.log("Decision POSTs 1; committed 1 use / 480000 paise; reserved 0 uses / 0 paise; mandate REVOKED");
     }, !!(receipt && revoked));
-    const ops = await step("Chromium /ops in separate context", () => workspace("ops"));
-    const operator = await step("Ops login", async () => {
-      // With no listener we can still verify browser failure handling without assuming an Ops seed.
-      requireResult(!ready || (process.env.D06_OPS_ID && process.env.D06_OPS_PASSWORD), "B seed must supply D06_OPS_ID and D06_OPS_PASSWORD");
-      await login(ops, "ops", process.env.D06_OPS_PASSWORD ?? randomUUID(), process.env.D06_OPS_ID ?? "d06-probe", stack.gateway);
-    }, !!(ops && loginAllowed));
-    await step("Ops audit verification", async () => {
-      await exchange(ops, stack.gateway, "/v1/audit/verify", "GET", () => button(ops, "Verify audit chain").click(), [200]);
+    const report = await step("Ops audit verification covers the Customer receipt", async () => {
+      const response = await exchange(ops, stack.gateway, "/v1/audit/verify", "GET", () => button(ops, "Verify audit chain").click(), [200]);
+      const report = await response.json();
+      requireResult(report.valid && report.first_failure === null && report.entries_checked === report.head_seq
+        && report.head_seq >= receipt.seq, "verification did not cover the Customer receipt");
       await ops.getByText("Verification passed.", { exact: true }).waitFor();
-    }, !!(operator && ready));
-    await step("Ops historical evidence", async () => {
+      console.log(`Audit entries ${report.entries_checked}; retained checkpoint through ${report.anchored_through_seq}`);
+      return report;
+    }, !!(operator && receipt && revoked));
+    const bundle = await step("Ops historical evidence matches mandate, approval, receipt and bank operation", async () => {
       await ops.getByLabel("Request ID", { exact: true }).fill(payment.request);
       await button(ops, "Apply filters").click();
       const evidence = ops.getByRole("button", { name: `View evidence for ${payment.request} from sequence`, exact: false }).first();
       await exchange(ops, stack.gateway, `/v1/audit/evidence/${payment.request}`, "GET", () => evidence.click(), [200]);
       const region = ops.getByRole("region", { name: `Evidence for ${payment.request}` });
-      const bundle = JSON.parse(await region.locator("details pre").innerText());
+      const evidenceText = await region.locator("details pre").innerText();
+      const bundle = JSON.parse(evidenceText, (key, value) => {
+        requireResult(!/^(?:authorization|access_token|session_token|pin|password|private_key)$/i.test(key),
+          "evidence included a confidential field");
+        return value;
+      });
       requireResult(bundle.request_id === payment.request && bundle.action.request_id === payment.request
         && bundle.action.mandate_id === mandate && bundle.mandate.terms.mandate_id === mandate
         && bundle.mandate.status === "ACTIVE" && bundle.action.mandate_hash === bundle.mandate.mandate_hash
         && bundle.action.params.amount_paise === 480000 && bundle.action.params.currency === "INR"
-        && bundle.bank_outcome?.status === "EXECUTED" && !!bundle.bank_outcome.bank_operation_id,
+        && bundle.action.params.from_account === "ACC-001" && bundle.action.params.payee_id === "BILL-ELEC"
+        && bundle.action.params.reference === stack.reference
+        && bundle.bank_outcome?.status === "EXECUTED" && !!bundle.bank_outcome.bank_operation_id
+        && typeof bundle.bank_outcome.bank_idempotency_key === "string",
       "historical mandate, action amount, or bank execution did not agree");
-      if (receipt) requireResult(bundle.audit_references.some((ref) =>
+      const approvals = bundle.approval_history.filter((item) => item.event_type === "escalation.approved");
+      requireResult(approvals.length === 1 && approvals[0].safe_payload.escalation_id === payment.escalation
+        && approvals[0].safe_payload.decision === "APPROVE", "Ops evidence disagreed with the Customer decision");
+      requireResult(bundle.audit_references.some((ref) =>
         ref.seq === receipt.seq && ref.entry_hash === receipt.entry_hash), "Ops evidence lacked the Customer receipt");
-    }, !!(operator && ready && payment));
+      requireResult(bundle.verification.valid && bundle.verification.head_seq === report.head_seq
+        && bundle.verification.head_hash === report.head_hash, "Ops evidence disagreed with the verification report");
+      const [download] = await Promise.all([
+        ops.waitForEvent("download"), region.getByRole("link", { name: "Download evidence JSON" }).click(),
+      ]);
+      requireResult(download.suggestedFilename() === `audit-evidence-${payment.request}.json`, "unexpected evidence filename");
+      deepStrictEqual(JSON.parse(await readFile(await download.path(), "utf8")), bundle);
+      console.log(`Verified evidence download for ${payment.request}; approval audit seq ${approvals[0].seq}`);
+      return bundle;
+    }, !!(operator && report && payment));
+    await step("exactly one persisted bank debit of 480000 paise for the approved operation", () => {
+      const outcome = bundle.bank_outcome;
+      const { balance, debits, operation } = stack.bankSnapshot(outcome);
+      requireResult(debits.length === 1 && debits[0].reference === bundle.action.params.reference
+        && debits[0].amount_paise === 480000 && debits[0].balance_after_paise === balance
+        && opening.balance - balance === 480000 && outcome.balance_paise === balance
+        && operation?.bank_operation_id === outcome.bank_operation_id && operation.status === "EXECUTED"
+        && operation.amount_paise === 480000 && operation.balance_paise === balance,
+      "persisted bank operation, debit or balance disagreed with the approved payment");
+      console.log(`Bank operation ${publicId(operation.bank_operation_id)}; ledger entry ${publicId(debits[0].entry_id)}; balance ${opening.balance} → ${balance} paise`);
+    }, !!(opening && bundle));
+    await step("Ops suspend and reinstate through refreshed registry state", async () => {
+      const agent = ops.getByRole("listitem").filter({ has: ops.getByText("agt_billpal", { exact: true }) });
+      for (const [action, label, status] of [
+        ["suspend", "Suspend globally BillPal Agent", "SUSPENDED"],
+        ["reinstate", "Reinstate BillPal Agent", "ACTIVE"],
+      ]) {
+        const response = await exchange(ops, stack.gateway, `/v1/ops/agents/agt_billpal/${action}`, "POST",
+          () => button(agent, label).click(), [200]);
+        requireResult((await response.json()).status === status, `agent mutation did not return ${status}`);
+        await agent.getByText(status, { exact: true }).waitFor();
+      }
+    }, !!(operator && bundle));
     await step("browser HTTP destinations limited to UI and gateway", () => {
       requireResult(!unexpectedDestination, "browser contacted an unexpected origin");
     }, !!(customer && ops));

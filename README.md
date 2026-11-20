@@ -89,7 +89,7 @@ AgentGate includes 18 end-to-end scenarios covering all attack vectors and norma
 
 ## 5. Measured Quantitative Benchmarks
 
-All target benchmarks are measured empirically via `tools/metrics.py`:
+Historical synthetic measurements from `tools/metrics.py` follow. S3 uses a fixture ledger, latency measures the risk scorer, and throughput measures an in-memory SHA-256 chain. The Windows runbook records the live payment independently.
 
 ```
 ====================================================================================
@@ -148,28 +148,25 @@ cd ..
 
 ## 7. Running the System
 
-### 1. Launching the Backend Gateway
+Start the disposable real gateway and simulated bank in one PowerShell terminal after installation.
+
 ```powershell
-uv run python -m tools.dev service a --profile scripted --port 8000
+powershell -NoProfile -File .\tools\demo.ps1
 ```
-*Starts the FastAPI Gateway on `http://127.0.0.1:8000` with SQLite WAL persistence.*
 
-### 2. Launching the Frontend Web Application
+Start Vite in a second terminal from the checkout root.
+
 ```powershell
-cd frontend
-npm run dev
+Set-Location frontend
+$env:VITE_GATEWAY_ORIGIN = 'http://127.0.0.1:8000'
+npm run dev:real -- --strictPort
 ```
-*Starts the React + Vite web application on `http://127.0.0.1:5173`.*
 
-Access points:
-- **Customer Portal:** [http://127.0.0.1:5173/](http://127.0.0.1:5173/)
-- **Operations Console:** [http://127.0.0.1:5173/ops](http://127.0.0.1:5173/ops)
-
----
+Open `http://127.0.0.1:5173/customer` and `http://127.0.0.1:5173/ops`. Use the credentials chosen at launch. The complete signed payment example and automated clean-start commands are in the [Windows runbook](docs/d/README.md).
 
 ## 8. Verification & Test Commands
 
-AgentGate maintains a zero-defect quality gate across Python and TypeScript:
+Run the following checks from the checkout root.
 
 ```powershell
 # 1. Verify frozen contract specifications across all owners
@@ -181,7 +178,8 @@ uv run pytest -v
 # 3. Execute strict linter checks
 uv run ruff check
 
-# 4. Run static type checking across 116 source files
+# 4. Run the configured strict contract gate, then the wider diagnostic
+uv run mypy
 uv run mypy contracts gateway simulator tools tests/c tests/a
 
 # 5. Run all 18 deterministic simulator scenarios (S1-S11)
@@ -201,27 +199,7 @@ npm run build
 
 ## 9. 7-Minute Live Demonstration Walkthrough
 
-Follow this sequence to demonstrate AgentGate end-to-end:
-
-1. **Customer Delegation:**
-   - Open [http://127.0.0.1:5173/](http://127.0.0.1:5173/) and log in as `cust_001`.
-   - Inspect active mandates: notice remaining budget in INR (`₹8,150.00`).
-   - Create a new delegation for `agt_billpal` authorizing `BILL-ELEC` with PIN `4821`.
-2. **Human-in-the-Loop Escalation:**
-   - In the **Approval Inbox**, observe an escalated ₹4,800 payment flagged with `MEDIUM` risk (`AMOUNT_ELEVATED`).
-   - Click **Approve (PIN)** and enter `4821`. Verify the debit occurs and an `audit_ref` receipt appears.
-   - For an escalated structuring attack attempt, click **Reject & Suspend** to immediately isolate the agent.
-3. **Operations Console & Circuit Breaker:**
-   - Navigate to [http://127.0.0.1:5173/ops](http://127.0.0.1:5173/ops) and log in as `ops_admin`.
-   - Review agent registry: observe `agt_billpal` status and test live **Suspend** and **Reinstate** controls.
-4. **Cryptographic Audit Chain & Tamper Demo:**
-   - Click **Verify Audit Chain**: observe green confirmation verifying the SHA-256 hash chain.
-   - Click **Simulate Tamper** and re-verify: observe immediate detection of the corrupt block at `aud_002`.
-5. **Regulatory Evidence Bundle:**
-   - Enter request ID `req_elec_001` and click **Inspect Evidence**.
-   - Download the complete self-contained JSON evidence bundle for dispute resolution.
-
----
+Use the [presenter script](docs/DEMO.md) and [milestone evidence](docs/TEST_RUN.md). The Customer creates and approves the mandate-bound payment. Ops uses its request ID to verify and download the evidence.
 
 ## 10. Repository File Structure
 

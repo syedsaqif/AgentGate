@@ -24,6 +24,8 @@ def format_event_frame(
         item_customer = item.customer_id
         if item_customer is None or item_customer != customer_id:
             return None
+        if item.event_type == "policy.decision":
+            return None
 
     # Construct the JSON envelope per Section 6.8
     inner_data: dict[str, Any] = dict(item.data)

@@ -266,8 +266,10 @@ async def test_happy_path_bill_payment_allow(pipeline_test_env) -> None:
         assert data["bank_result"]["status"] == "EXECUTED"
         assert len(bank.calls) == 1
 
-        # Verify event was published to EventBus
-        event = await queue.get()
+        decision = queue.get_nowait()
+        assert decision.event_type == "policy.decision"
+        assert decision.data["decision"] == "ALLOW"
+        event = queue.get_nowait()
         assert event.event_type == "bank.executed"
         assert event.data["status"] == "EXECUTED"
         assert event.data["customer_id"] == "cust_001"

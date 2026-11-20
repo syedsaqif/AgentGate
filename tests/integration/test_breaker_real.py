@@ -6,10 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from agent_sdk import build_dpop_proof, generate_agent_keypair
-from contracts.audit_models import AuditEvent
 from contracts.common import ActionType
 from contracts.core_models import (
     Grant,
@@ -258,7 +256,9 @@ async def test_circuit_breaker_real_integration(tmp_path: Path) -> None:
     assert verify_report.entries_checked >= 2  # registration + suspension
 
     entries_page = await providers.audit_log.list_entries(agent_id=agent_id)
-    event_types = [e["event_type"] if isinstance(e, dict) else e.event_type for e in entries_page.items]
+    event_types = [
+        e["event_type"] if isinstance(e, dict) else e.event_type for e in entries_page.items
+    ]
     assert "agent.suspended" in event_types
 
     await async_engine.dispose()

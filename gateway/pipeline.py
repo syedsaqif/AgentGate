@@ -453,6 +453,19 @@ async def process_money_action(
             status_code=503,
         ) from audit_exc
 
+    if deps.event_bus is not None:
+        await deps.event_bus.publish(
+            audit_event.event_type,
+            {
+                "request_id": canonical_action.request_id,
+                "customer_id": canonical_action.customer_id,
+                "agent_id": canonical_action.agent_id,
+                "decision": final_decision.value,
+                "reason_codes": audit_event.reason_codes,
+                "risk": risk_result.model_dump(mode="json"),
+            },
+        )
+
     # 10. Final Decision Branching
     if final_decision == FinalDecision.ALLOW:
         if deps.execution_port is None:
@@ -464,9 +477,10 @@ async def process_money_action(
 
         exec_res = await deps.execution_port.execute_stored(canonical_action.request_id)
 
-        # Publish event to EventBus strictly after execution
+        # Adapters without this bus rely on the pipeline to publish the receipt.
         if (
             deps.event_bus is not None
+            and getattr(deps.execution_port, "event_bus", None) is not deps.event_bus
             and exec_res.bank_result
             and exec_res.bank_result.status == BankStatus.EXECUTED
         ):

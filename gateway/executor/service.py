@@ -221,9 +221,7 @@ class ExecutionService(ExecutionPort):
         # Phase 3: Completion transaction
         # -------------------------------------------------------------
         async with self.unit_of_work as tx:
-            session = tx.session
-            rec = await self.action_store.get_record(session, request_id)
-
+            rec = await self.action_store.get_record(tx.session, request_id)
             if bank_res.status == BankStatus.EXECUTED:
                 # Commit reservation idempotently
                 await self.reservation_manager.commit(res_id, tx)
@@ -249,30 +247,7 @@ class ExecutionService(ExecutionPort):
                     rec.audit_seq = final_audit.seq
                     rec.audit_hash = final_audit.entry_hash
 
-                if self.event_bus is not None:
-                    await self.event_bus.publish(
-                        "bank.executed",
-                        {
-                            "request_id": request_id,
-                            "customer_id": action.customer_id,
-                            "agent_id": action.agent_id,
-                            "status": "EXECUTED",
-                            "audit_ref": {
-                                "seq": final_audit.seq,
-                                "entry_hash": final_audit.entry_hash,
-                            },
-                        },
-                    )
-
-                return ExecutionResult(
-                    request_id=request_id,
-                    status=ActionStatus.EXECUTED,
-                    bank_result=bank_res,
-                    audit_ref=final_audit,
-                    escalation_id=escalation_id,
-                )
-
-            if bank_res.status == BankStatus.REJECTED:
+            elif bank_res.status == BankStatus.REJECTED:
                 # Definitive business rejection -> release reservation
                 await self.reservation_manager.release(res_id, tx)
                 if rec:
@@ -300,31 +275,51 @@ class ExecutionService(ExecutionPort):
                     escalation_id=escalation_id,
                 )
 
-            # BankStatus.UNKNOWN (Timeout or network disconnection)
-            # Retain reservation; mark EXECUTION_UNKNOWN
-            await self.reservation_manager.mark_unknown(res_id, tx)
-            if rec:
-                rec.status = ActionStatus.EXECUTION_UNKNOWN.value
+            else:
+                # BankStatus.UNKNOWN (Timeout or network disconnection)
+                # Retain reservation; mark EXECUTION_UNKNOWN
+                await self.reservation_manager.mark_unknown(res_id, tx)
+                if rec:
+                    rec.status = ActionStatus.EXECUTION_UNKNOWN.value
 
-            unk_event = AuditEvent(
-                event_type="bank.unknown",
-                request_id=request_id,
-                customer_id=action.customer_id,
-                agent_id=action.agent_id,
-                mandate_id=action.mandate_id,
-                mandate_hash=action.mandate_hash,
-                reason_codes=(ReasonCode.E_BANK_UNAVAILABLE.value,),
-                safe_payload={"bank_result": bank_res.model_dump(mode="json")},
-                occurred_at=self.clock.now(),
+                unk_event = AuditEvent(
+                    event_type="bank.unknown",
+                    request_id=request_id,
+                    customer_id=action.customer_id,
+                    agent_id=action.agent_id,
+                    mandate_id=action.mandate_id,
+                    mandate_hash=action.mandate_hash,
+                    reason_codes=(ReasonCode.E_BANK_UNAVAILABLE.value,),
+                    safe_payload={"bank_result": bank_res.model_dump(mode="json")},
+                    occurred_at=self.clock.now(),
+                )
+                final_audit = await self.audit_log.append(unk_event, tx=tx)
+                return ExecutionResult(
+                    request_id=request_id,
+                    status=ActionStatus.EXECUTION_UNKNOWN,
+                    bank_result=bank_res,
+                    audit_ref=final_audit,
+                    escalation_id=escalation_id,
+                )
+
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                "bank.executed",
+                {
+                    "request_id": request_id,
+                    "customer_id": action.customer_id,
+                    "agent_id": action.agent_id,
+                    "status": "EXECUTED",
+                    "audit_ref": final_audit.model_dump(mode="json"),
+                },
             )
-            final_audit = await self.audit_log.append(unk_event, tx=tx)
-            return ExecutionResult(
-                request_id=request_id,
-                status=ActionStatus.EXECUTION_UNKNOWN,
-                bank_result=bank_res,
-                audit_ref=final_audit,
-                escalation_id=escalation_id,
-            )
+        return ExecutionResult(
+            request_id=request_id,
+            status=ActionStatus.EXECUTED,
+            bank_result=bank_res,
+            audit_ref=final_audit,
+            escalation_id=escalation_id,
+        )
 
     async def recover_unresolved(self) -> list[str]:
         """Scan DISPATCHED and EXECUTION_UNKNOWN actions and reconcile with BankClient."""

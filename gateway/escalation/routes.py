@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Header, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from contracts.audit_models import AuditEvent
 from contracts.audit_ports import AuditLog
 from contracts.common import HumanRole, Tx
 from contracts.core_ports import ExecutionPort, Lifecycle
-from contracts.escalation_models import EscalationDecision, EscalationState
+from contracts.escalation_models import Escalation, EscalationDecision, EscalationState
+from contracts.identity_models import AuthContext
 from contracts.identity_ports import HumanAuth
 from contracts.reason_codes import HTTP_STATUS_BY_CODE, ReasonCode
 from gateway.errors import AgentGateError
@@ -74,6 +75,12 @@ def _extract_bearer_token(auth_header: str | None) -> str:
     return auth_header
 
 
+async def authorize_escalation_agent(request: Request) -> AuthContext:
+    from gateway.pipeline import authenticate_agent, get_dependencies
+
+    return await authenticate_agent(request, await request.body(), get_dependencies(request))
+
+
 def create_escalation_router(
     service: PersistentEscalationService,
     human_auth: HumanAuth | None = None,
@@ -92,31 +99,18 @@ def create_escalation_router(
     )
     async def get_escalation_agent(
         id: str,
-        authorization: str | None = Header(None),
-        x_subject_id: str | None = Header(None, alias="X-Subject-ID"),
+        auth: Annotated[AuthContext, Depends(authorize_escalation_agent)],
     ) -> EscalationStatusResponse:
         """Agent read-only status query with exact ownership binding."""
-        subject = x_subject_id
-        if not subject and authorization:
-            token = _extract_bearer_token(authorization)
-            if human_auth is not None:
-                try:
-                    ctx = await human_auth.authenticate(token, HumanRole.CUSTOMER)
-                    subject = ctx.subject_id
-                except Exception:
-                    subject = token
-            else:
-                subject = token
-
-        if not subject:
-            raise AgentGateError(
-                code=ReasonCode.E_AUTH_MISSING,
-                message="Caller authentication required",
-                status_code=status.HTTP_401_UNAUTHORIZED,
-            )
-
         try:
-            esc = await service.get_owned(id, subject)
+            esc = await service.get_owned(id, auth.agent_id)
+            if (
+                esc.agent_id != auth.agent_id
+                or esc.customer_id != auth.customer_id
+                or esc.mandate_id != auth.mandate_id
+                or esc.action.mandate_hash != auth.mandate_hash
+            ):
+                raise KeyError(id)
         except KeyError:
             # Wrong owner returns exact same 404 to avoid enumeration
             raise AgentGateError(
@@ -190,7 +184,6 @@ def create_escalation_router(
     async def submit_decision(
         id: str,
         body: DecisionRequest,
-        response: Response,
         authorization: str | None = Header(None),
     ) -> dict[str, Any]:
         """Customer decision endpoint approving or rejecting a pending escalation."""
@@ -265,26 +258,24 @@ def create_escalation_router(
                     status_code=status.HTTP_403_FORBIDDEN,
                 ) from None
 
-        # Transaction context wrapper
-        # Customer reject-and-suspend invokes lifecycle
-        if (
-            body.decision == EscalationDecision.REJECT
-            and body.suspend_agent
-            and lifecycle is not None
-        ):
-            await lifecycle.suspend_customer_delegation(
-                customer_id,
-                esc.agent_id,
-                (ReasonCode.E_ESC_REJECTED.value,),
-            )
-
         try:
-            updated_esc = await service.decide(
-                escalation_id=id,
-                decision=body.decision,
-                subject_id=customer_id,
-                tx=None,
-            )
+            async def decide(tx: Tx | None) -> Escalation:
+                return await service.decide(id, body.decision, customer_id, tx)
+
+            if body.decision == EscalationDecision.REJECT and body.suspend_agent:
+                if lifecycle is None:
+                    raise AgentGateError(
+                        code=ReasonCode.E_SERVICE_UNAVAILABLE,
+                        message="Delegation lifecycle is unavailable",
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+                updated_esc = await lifecycle.suspend_customer_delegation(
+                    customer_id, esc.agent_id, (ReasonCode.E_ESC_REJECTED.value,),
+                    before_suspend=decide,
+                )
+                assert updated_esc is not None
+            else:
+                updated_esc = await decide(None)
         except KeyError:
             raise AgentGateError(
                 code=ReasonCode.E_REQ_INVALID,
@@ -328,11 +319,12 @@ def create_escalation_router(
                     status_code=http_status,
                 ) from e
 
+            updated_esc = await service.get_owned(id, customer_id)
             return {
                 "escalation_id": id,
                 "request_id": str(esc.request_id),
                 "decision": body.decision.value,
-                "state": EscalationState.EXECUTED.value,
+                "state": str(updated_esc.state),
                 "result": exec_res.model_dump(mode="json"),
             }
 
@@ -340,11 +332,7 @@ def create_escalation_router(
             "escalation_id": id,
             "request_id": str(esc.request_id),
             "decision": body.decision.value,
-            "state": (
-                updated_esc.state.value
-                if hasattr(updated_esc.state, "value")
-                else str(updated_esc.state)
-            ),
+            "state": str(updated_esc.state),
         }
 
     return router

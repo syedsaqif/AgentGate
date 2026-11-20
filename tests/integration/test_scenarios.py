@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from pathlib import Path
+
 import pytest
 
 from simulator.client_port import FixtureScenarioClient
@@ -260,27 +263,22 @@ async def test_scenario_s11_evidence_bundle() -> None:
 @pytest.mark.asyncio
 async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
     """Real-stack scenario execution (S1 and S9) driving real SDK through real gateway."""
+    from httpx import ASGITransport, AsyncClient
+
+    from agent_sdk import AgentGateClient, generate_agent_keypair
     from bank_mock.main import create_bank_app
     from bank_mock.schema import BankBase, create_bank_db_engine, create_bank_session_factory
     from bank_mock.service import seed_bank_data
-    from gateway.config import AgentGateConfig
+    from contracts.common import HumanRole
+    from gateway.audit.schema import create_audit_schema
     from gateway.executor.bank_client import HttpBankClient
-    from gateway.identity.crypto import generate_ed25519_keypair
-    from gateway.identity.human_auth import HumanSessionKeyring
     from gateway.identity.schema import (
         create_identity_schema,
-        create_identity_session_factory,
         create_sqlite_identity_engine,
     )
-    from gateway.audit.schema import create_audit_schema
-    from gateway.identity.wiring import build_real_member_b_providers
     from gateway.main import create_app
-    from gateway.platform.clock import SystemClock
     from gateway.platform.db import Base, create_db_engine
     from gateway.platform.startup import init_database
-    from httpx import ASGITransport, AsyncClient
-    from agent_sdk import AgentGateClient, generate_agent_keypair
-    from contracts.common import HumanRole
 
     # 1. Setup real simulated bank
     bank_db = tmp_path / "bank_scenario.db"
@@ -363,12 +361,13 @@ async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
         customer_token = login_res.json()["session_token"]
         auth_hdr = {"Authorization": f"Bearer {customer_token}"}
 
+        now = deps.clock.now()
         mandate_res = await http_client.post(
             "/v1/customer/mandates",
             json={
                 "agent_id": agent_id,
-                "valid_from": "2026-11-01T00:00:00Z",
-                "valid_until": "2026-12-31T23:59:59Z",
+                "valid_from": (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                "valid_until": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
                 "grants": [
                     {
                         "grant_id": "grt_bill_01",
@@ -376,7 +375,7 @@ async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
                         "account_ids": ["ACC-001"],
                         "payee_ids": ["BILL-ELEC"],
                         "max_per_txn_paise": 500000,
-                        "max_total_paise": 1000000,
+                        "max_total_paise": 2000000,
                         "max_count": 5,
                         "category": "utilities.electricity",
                     }
@@ -408,7 +407,7 @@ async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
             assert s1_res["status"] == "EXECUTED"
             assert s1_res["audit_ref"]["seq"] >= 1
 
-            # 6. SDK Client drives S9a (Step-up for ₹4,800 > ₹4,000 threshold -> escalates to PENDING_APPROVAL)
+            # 6. S9a exceeds the ₹4,000 step-up threshold and waits for Customer approval.
             s9_res = await sdk_client.pay_bill(
                 from_account="ACC-001",
                 payee_id="BILL-ELEC",
@@ -420,6 +419,12 @@ async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
             assert s9_res["decision"] == "ESCALATE"
             escalation_id = s9_res["escalation_id"]
             request_id = s9_res["request_id"]
+            status = await sdk_client.get_escalation(escalation_id)
+            assert status["request_id"] == request_id
+            assert status["state"] == "PENDING"
+
+        unauthorized = await http_client.get(f"/v1/escalations/{escalation_id}")
+        assert unauthorized.status_code == 401
 
         # 7. Customer sees escalation in inbox and approves with PIN
         inbox_res = await http_client.get("/v1/customer/escalations", headers=auth_hdr)
@@ -457,5 +462,37 @@ async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
         bundle = ev_res.json()
         assert bundle["request_id"] == request_id
         assert bundle["bank_outcome"]["status"] == "EXECUTED"
+
+        # A later step-up can be rejected while withdrawing the customer's delegation.
+        async with AgentGateClient(
+            gateway_url="http://127.0.0.1:8000",
+            agent_id=agent_id,
+            mandate_id=mandate_id,
+            keypair=agent_kp,
+            transport=gw_transport,
+        ) as sdk_client:
+            pending = await sdk_client.pay_bill(
+                from_account="ACC-001",
+                payee_id="BILL-ELEC",
+                amount_paise=410000,
+                task="Pay electricity bill",
+                category="utilities.electricity",
+            )
+        assert pending["status"] == "PENDING_APPROVAL"
+        rejected = await http_client.post(
+            f"/v1/customer/escalations/{pending['escalation_id']}/decision",
+            json={"decision": "REJECT", "suspend_agent": True},
+            headers=auth_hdr,
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["state"] == "REJECTED"
+        mandates = await http_client.get("/v1/customer/mandates", headers=auth_hdr)
+        [mandate] = mandates.json()["items"]
+        assert mandate["terms"]["mandate_id"] == mandate_id
+        assert mandate["status"] == "REVOKED"
+        assert mandate["usage"][0]["committed_paise"] == 665000
+        assert mandate["usage"][0]["reserved_paise"] == 0
+        agents = await http_client.get("/v1/ops/agents", headers=ops_hdr)
+        assert agents.json()["items"][0]["status"] == "ACTIVE"
 
     gw_sync_engine.dispose()

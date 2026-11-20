@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,6 +17,7 @@ from bank_mock.schema import (
 )
 from bank_mock.service import seed_bank_data
 from contracts import CONTRACT_VERSION
+from gateway.config import AgentGateConfig
 
 
 @asynccontextmanager
@@ -42,8 +42,8 @@ def create_bank_app(
     service_key: str | None = None,
 ) -> FastAPI:
     """Create independent mock bank FastAPI application."""
-    if not db_url:
-        db_url = os.getenv("AGENTGATE_BANK_DB_URL", "sqlite+aiosqlite:///runtime/bank.db")
+    config = AgentGateConfig.load()
+    db_url = db_url or config.bank_database_url
 
     engine = create_bank_db_engine(db_url)
     session_factory = create_bank_session_factory(engine)
@@ -60,7 +60,8 @@ def create_bank_app(
     app.state.session_factory = session_factory
     app.state.service_key = (
         service_key
-        or os.getenv("AGENTGATE_BANK_SERVICE_CREDENTIAL", "local-bank-dev-secret")
+        or config.bank_service_credential
+        or "local-bank-dev-secret"
     )
 
     @app.exception_handler(StarletteHTTPException)

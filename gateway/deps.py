@@ -428,8 +428,6 @@ def build_dependencies(
     if config.profile == "test":
         return build_test_dependencies(config, overrides)
 
-    from pathlib import Path
-
     from gateway.escalation.service import EscalationConfig
     from gateway.events.bus import EventBus
     from gateway.executor.actions import ActionStore
@@ -490,9 +488,7 @@ def build_dependencies(
     if overrides and "session_factory" in overrides:
         session_factory = overrides["session_factory"]
 
-    gateway_url = config.database.gateway_url
-    if config.gateway_db and Path(config.gateway_db).is_absolute():
-        gateway_url = f"sqlite+aiosqlite:///{Path(config.gateway_db).as_posix()}"
+    gateway_url = config.gateway_database_url
 
     if session_factory is None and gateway_url:
         engine = create_db_engine(gateway_url)

@@ -7,16 +7,18 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import uvicorn
 import yaml
 
 from contracts import CONTRACT_VERSION
 from contracts.canonical import canonical_json, sha256_prefixed
 from gateway.config import AgentGateConfig
-from gateway.deps import build_dependencies
 from gateway.platform.dev import DEFAULT_DEV_KEY
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +109,7 @@ def run_service(owner: str, profile: str, host: str = "127.0.0.1", port: int = 8
     """Launch the appropriate application service for local track development."""
     os.environ["AGENTGATE_PROFILE"] = profile
     if owner == "a":
+        os.environ.setdefault("AGENTGATE_GATEWAY_ORIGIN", f"http://{host}:{port}")
         print(f"Starting Track A Gateway on http://{host}:{port} with profile '{profile}'...")
         uvicorn.run("gateway.main:app", host=host, port=port, log_level="info")
     else:
@@ -116,41 +119,22 @@ def run_service(owner: str, profile: str, host: str = "127.0.0.1", port: int = 8
 def run_stack(
     profile: str, host: str = "127.0.0.1", port: int = 8000, bank_port: int = 8001
 ) -> None:
-    """Start mock bank on loopback and gateway monolith with provider mode reporting."""
+    """Start the simulated bank first, then the gateway using the same local configuration."""
     os.environ["AGENTGATE_PROFILE"] = profile
+    os.environ["AGENTGATE_GATEWAY_ORIGIN"] = f"http://{host}:{port}"
+    os.environ["AGENTGATE_BANK_ORIGIN"] = f"http://127.0.0.1:{bank_port}"
     config = AgentGateConfig.load(profile=profile)
-    deps = build_dependencies(config)
-    modes = deps.provider_modes()
+    if profile == "real" and not config.bank_service_credential:
+        raise SystemExit("Set AGENTGATE_BANK_SERVICE_CREDENTIAL before starting the real stack.")
 
-    print("=" * 60)
-    print(f"AgentGate Stack Startup — Profile: {profile.upper()}")
-    print("=" * 60)
-    print("Active Provider Modes:")
-    for k, v in modes.items():
-        status_label = "[REAL]" if v == "real" else f"[{v.upper()}]"
-        print(f"  {k:14}: {status_label}")
-    print("-" * 60)
-    print(f"Mock Bank: http://{host}:{bank_port}")
-    print(f"Gateway:   http://{host}:{port}")
-    print("=" * 60)
-
-    try:
-        deps.validate_for_profile()
-    except Exception as exc:
-        print(f"FAIL-CLOSED GUARD: {exc}")
-        if profile == "real":
-            print(
-                "Cannot launch full real stack until all real security providers are implemented."
-            )
-            return
-
+    print(f"Gateway readiness ({profile}): {config.gateway_origin}/health/ready", flush=True)
     bank_cmd = [
-        "uv",
-        "run",
+        sys.executable,
+        "-m",
         "uvicorn",
         "bank_mock.main:app",
         "--host",
-        host,
+        "127.0.0.1",
         "--port",
         str(bank_port),
         "--log-level",
@@ -158,9 +142,25 @@ def run_stack(
     ]
     bank_proc = subprocess.Popen(bank_cmd)
     try:
+        with httpx.Client(timeout=0.5, trust_env=False) as client:
+            for _ in range(80):
+                if bank_proc.poll() is not None:
+                    raise SystemExit("The simulated bank exited during startup.")
+                try:
+                    ready = client.get(f"{config.bank_origin}/openapi.json")
+                    if ready.is_success and ready.json().get("info", {}).get("title") == (
+                        "AgentGate Mock Bank"
+                    ):
+                        break
+                except (httpx.TransportError, ValueError):
+                    pass
+                time.sleep(0.125)
+            else:
+                raise SystemExit("The simulated bank did not become ready.")
         uvicorn.run("gateway.main:app", host=host, port=port, log_level="info")
     finally:
-        bank_proc.terminate()
+        if bank_proc.poll() is None:
+            bank_proc.terminate()
         bank_proc.wait()
 
 

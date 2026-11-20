@@ -1,9 +1,10 @@
 import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,12 +36,18 @@ export async function disposableStack() {
   while (bankPort === gatewayPort) bankPort = await localPort();
   const gateway = `http://127.0.0.1:${gatewayPort}`;
   const bank = `http://127.0.0.1:${bankPort}`;
+  const opsId = "ops_admin";
+  const opsPassword = randomBytes(24).toString("hex");
+  const reference = `d06-${randomBytes(16).toString("hex")}`;
+  const customerPin = String(randomInt(1000, 10000));
+  const billpalKey = path.join(runtime, "billpal.pem");
   const env = { ...process.env, PYTHONPATH: repo, AGENTGATE_PROFILE: "real",
+    D06_OPS_ID: opsId, D06_OPS_PASSWORD: opsPassword, D06_CUSTOMER_PIN: customerPin,
+    D06_BILLPAL_KEY: billpalKey, D06_REGISTRAR_PASSWORD: randomBytes(24).toString("hex"),
     AGENTGATE_BANK_SERVICE_CREDENTIAL: randomBytes(32).toString("hex"),
-    AGENTGATE_HUMAN_SESSION_SECRET: randomBytes(32).toString("hex"),
     AGENTGATE_GATEWAY_ORIGIN: gateway, AGENTGATE_BANK_ORIGIN: bank,
     AGENTGATE_GATEWAY_DB: path.join(runtime, "gateway.db"), AGENTGATE_BANK_DB: path.join(runtime, "bank.db"),
-    AGENTGATE_BANK_DB_URL: "sqlite+aiosqlite:///runtime/bank.db",
+    AGENTGATE_BANK_DB_URL: `sqlite+aiosqlite:///${path.join(runtime, "bank.db").split(path.sep).join("/")}`,
   };
   for (const name of ["MANDATE", "AUDIT", "TOKEN"]) {
     env[`AGENTGATE_${name}_SIGNING_KEY_PATH`] = path.join(runtime, `${name.toLowerCase()}.pem`);
@@ -56,7 +63,6 @@ export async function disposableStack() {
     child.once("exit", () => { stopped = true; });
     let diagnostic = "";
     child.stderr.on("data", (chunk) => {
-      console.error("SERVER STDERR:", chunk.toString());
       // Only these known provider names may reach stdout. Drop raw launcher diagnostics.
       diagnostic = (diagnostic + chunk).slice(-4096);
       const line = diagnostic.match(/Missing required real providers: ([a-z_, ]+)/);
@@ -78,6 +84,10 @@ export async function disposableStack() {
   }
   return {
     gateway,
+    opsId,
+    opsPassword,
+    customerPin,
+    reference,
     async seed() {
       try { await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 }); }
       catch (error) {
@@ -85,31 +95,48 @@ export async function disposableStack() {
           ? "tools.seed is the IC0 placeholder (exit 1)" : "tools.seed failed");
       }
     },
-    bank: () => launch(["uvicorn", "bank_mock.main:app", "--host", "127.0.0.1", "--port", String(bankPort)], bank + "/openapi.json"),
-    ready: () => launch(["tools.dev", "service", "a", "--profile", "real", "--port", String(gatewayPort)], gateway + "/health/ready"),
+    async bank() {
+      const response = await fetch(bank + "/openapi.json", { signal: AbortSignal.timeout(3000), redirect: "error" });
+      requireResult(response.ok, `bank readiness returned HTTP ${response.status}`);
+      return response.json();
+    },
+    ready: () => launch(["tools.dev", "stack", "--profile", "real", "--port", String(gatewayPort),
+      "--bank-port", String(bankPort)], gateway + "/health/ready"),
     async checkSdk() {
       const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--help"], { ...options, timeout: 10000 });
       requireResult(["--key", "--mandate-id", "--amount-paise"].every((flag) => stdout.includes(flag)),
         "checkout does not provide B's signed pay-bill command");
     },
     async pay(mandateId) {
-      const key = process.env.D06_BILLPAL_KEY;
-      requireResult(key && path.isAbsolute(key), "B seed must supply the registered BillPal PEM path in D06_BILLPAL_KEY");
       let stdout;
       try {
         ({ stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--gateway-url", gateway,
-          "--agent-id", "agt_billpal", "--mandate-id", mandateId, "--key", key, "--from-account", "ACC-001",
+          "--agent-id", "agt_billpal", "--mandate-id", mandateId, "--key", billpalKey, "--from-account", "ACC-001",
           "--payee-id", "BILL-ELEC", "--amount-paise", "480000", "--task", "Pay electricity bill",
-          "--category", "utilities", "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
+          "--category", "utilities.electricity", "--reference", reference,
+          "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
         { ...options, timeout: 30000 }));
-      } catch (err) {
-        console.error("DEBUG EXEC ERROR stdout:", err.stdout, "stderr:", err.stderr);
+      } catch {
         throw new SmokeFailure("B SDK pay-bill failed; signed action outcome unconfirmed");
       }
       requireResult(stdout.trim(), "B SDK pay-bill produced no result");
       const result = JSON.parse(stdout);
       requireResult(result.status === "PENDING_APPROVAL" && result.decision === "ESCALATE", "signed payment did not return pending approval");
       return result;
+    },
+    bankSnapshot(bankOutcome) {
+      // Inspect the disposable provider database without expanding the browser or bank API.
+      const db = new DatabaseSync(env.AGENTGATE_BANK_DB, { readOnly: true });
+      try {
+        const account = db.prepare("SELECT balance_paise FROM accounts WHERE account_id = ?").get("ACC-001");
+        const debits = db.prepare(`SELECT entry_id, amount_paise, balance_after_paise, reference
+          FROM ledger WHERE account_id = ? AND entry_type = 'DEBIT'`).all("ACC-001");
+        const operation = bankOutcome && db.prepare(`SELECT bank_operation_id, status, amount_paise, balance_paise
+          FROM bank_idempotency_records WHERE bank_idempotency_key = ?`).get(bankOutcome.bank_idempotency_key);
+        return { balance: account?.balance_paise, debits, operation };
+      } finally {
+        db.close();
+      }
     },
     async close() {
       for (const child of children.reverse()) {

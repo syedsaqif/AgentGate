@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -9,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from contracts.audit_models import AuditEvent
 from contracts.audit_ports import AuditLog
-from contracts.common import AuditRef, Clock, OpaqueId, UnitOfWork
+from contracts.common import AuditRef, Clock, OpaqueId, Tx, UnitOfWork
 from contracts.core_ports import Lifecycle
+from contracts.escalation_models import Escalation
 from contracts.escalation_ports import EscalationService
 from contracts.identity_models import AgentStatus
 from contracts.identity_ports import AgentRegistry, TokenService
@@ -156,11 +158,14 @@ class LifecycleCoordinator(Lifecycle):
         reason_codes: tuple[str, ...] = (),
         actor: str | None = None,
         reason: str | None = None,
-    ) -> None:
-        """Customer safety action: revokes/suspends ONLY this customer's mandates for agent."""
+        *,
+        before_suspend: Callable[[Tx | None], Awaitable[Escalation]] | None = None,
+    ) -> Escalation | None:
+        """Optionally decide the approval, then revoke only this customer's delegation."""
         events_to_publish: list[dict[str, Any]] = []
 
         async with self.unit_of_work as tx:
+            decided = await before_suspend(tx) if before_suspend is not None else None
             session: AsyncSession = tx.session
             stmt = select(MandateTable).where(
                 MandateTable.customer_id == customer_id,
@@ -208,6 +213,7 @@ class LifecycleCoordinator(Lifecycle):
         if self.event_bus is not None:
             for ev in events_to_publish:
                 await self.event_bus.publish("mandate.revoked", ev)
+        return decided
 
     async def reinstate_agent(
         self,

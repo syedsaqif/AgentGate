@@ -52,8 +52,9 @@ class AgentGateConfig(BaseSettings):
 
     gateway_origin: str = "http://127.0.0.1:8000"
     bank_origin: str = "http://127.0.0.1:8001"
-    gateway_db: str = "runtime/gateway.db"
-    bank_db: str = "runtime/bank.db"
+    gateway_db: str | None = None
+    bank_db: str | None = None
+    bank_db_url: str | None = None
 
     bank_service_credential: str | None = None
     human_session_secret: str | None = None
@@ -83,6 +84,20 @@ class AgentGateConfig(BaseSettings):
     @property
     def active_profile_settings(self) -> ProfileSettings:
         return self.profiles.get(self.profile, self.profiles["test"])
+
+    @property
+    def gateway_database_url(self) -> str:
+        if self.gateway_db:
+            return f"sqlite+aiosqlite:///{Path(self.gateway_db).as_posix()}"
+        return self.database.gateway_url
+
+    @property
+    def bank_database_url(self) -> str:
+        if self.bank_db_url:
+            return self.bank_db_url
+        if self.bank_db:
+            return f"sqlite+aiosqlite:///{Path(self.bank_db).as_posix()}"
+        return self.database.bank_url
 
     @classmethod
     def load(

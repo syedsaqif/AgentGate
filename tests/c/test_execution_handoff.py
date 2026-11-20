@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -400,17 +401,17 @@ async def test_bank_outcome_mapping(clock: FrozenClock) -> None:
 
 @pytest.mark.asyncio
 async def test_real_stack_handoff(tmp_path: Path) -> None:
-    """Real-stack handoff integration verifying approved escalation dispatches to ExecutionService."""
+    """Verify an approved escalation dispatches through the real ExecutionService."""
+    from httpx import ASGITransport
+
     from bank_mock.main import create_bank_app
     from bank_mock.schema import BankBase, create_bank_db_engine, create_bank_session_factory
     from bank_mock.service import seed_bank_data
-    from contracts.common import ActionType
     from gateway.executor.actions import ActionStore
     from gateway.executor.bank_client import HttpBankClient
     from gateway.executor.reservations import ReservationManager
     from gateway.executor.service import ExecutionService
     from gateway.platform.db import Base, SqliteUnitOfWork, create_db_engine, create_session_factory
-    from httpx import ASGITransport
     from tests.support.b.providers import MemoryAuditLog
 
     # Setup real simulated bank
@@ -478,7 +479,9 @@ async def test_real_stack_handoff(tmp_path: Path) -> None:
             updated_at=clock.now(),
         )
         tx.session.add(m_row)
-        await action_store.record_action(tx.session, action, bank_idempotency_key="bank_idem_real_1")
+        await action_store.record_action(
+            tx.session, action, bank_idempotency_key="bank_idem_real_1"
+        )
 
     # Create and approve escalation in PersistentEscalationService
     esc_service = PersistentEscalationService(

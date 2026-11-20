@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
@@ -39,13 +40,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AgentGateConfig = app.state.config
 
     # Configure database engine & session factory if not already supplied
-    if config.database.gateway_url:
+    if config.gateway_database_url:
         engine = getattr(app.state, "engine", None)
         if engine is None:
-            gateway_url = config.database.gateway_url
-            if config.gateway_db and os.path.isabs(config.gateway_db):
-                gateway_url = f"sqlite+aiosqlite:///{config.gateway_db.replace('\\', '/')}"
-            engine = create_db_engine(gateway_url)
+            engine = create_db_engine(config.gateway_database_url)
             session_factory = create_session_factory(engine)
             app.state.engine = engine
             app.state.session_factory = session_factory
@@ -178,14 +176,11 @@ def create_app(
     app.state.overrides = overrides
 
     # If DB URL provided, set engine & session factory so unit tests without lifespan have DB
-    if config.database.gateway_url:
+    if config.gateway_database_url:
         engine = deps.extra.get("engine")
         session_factory = deps.extra.get("session_factory")
         if engine is None:
-            gateway_url = config.database.gateway_url
-            if config.gateway_db and os.path.isabs(config.gateway_db):
-                gateway_url = f"sqlite+aiosqlite:///{config.gateway_db.replace('\\', '/')}"
-            engine = create_db_engine(gateway_url)
+            engine = create_db_engine(config.gateway_database_url)
             session_factory = create_session_factory(engine)
         app.state.engine = engine
         app.state.session_factory = session_factory
@@ -282,21 +277,8 @@ def create_app(
     # Validate profile after dependencies are composed
     deps.validate_for_profile()
 
-    # Register X-Request-ID and CORS middlewares
-    from fastapi.middleware.cors import CORSMiddleware
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
     app.add_middleware(RequestIdMiddleware)
-
-    # Enable CORS for browser UI access
-    from fastapi.middleware.cors import CORSMiddleware
+    # The browser sends explicit bearer headers across origins.
 
     app.add_middleware(
         CORSMiddleware,

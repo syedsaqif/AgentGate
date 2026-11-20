@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
+from secrets import token_urlsafe
 
 from sqlalchemy import select
 
@@ -36,43 +37,32 @@ from gateway.platform.db import (
 from gateway.platform.startup import init_database
 
 
-def _resolve_billpal_key() -> tuple[AgentKeyPair, Path]:
-    billpal_key_path_env = os.getenv("D06_BILLPAL_KEY")
-    if billpal_key_path_env:
-        key_path = Path(billpal_key_path_env)
-    else:
-        key_path = Path("runtime/billpal.pem").resolve()
-
-    if key_path.exists():
-        pair = load_private_key_pem(key_path)
-    else:
-        pair = generate_agent_keypair()
-        save_private_key_pem(pair, key_path, overwrite=True)
-
-    if not os.getenv("D06_BILLPAL_KEY"):
-        os.environ["D06_BILLPAL_KEY"] = str(key_path.resolve())
-    return pair, key_path
+def _load_or_create_key(path: Path) -> AgentKeyPair:
+    if path.exists():
+        return load_private_key_pem(path)
+    pair = generate_agent_keypair()
+    save_private_key_pem(pair, path)
+    return pair
 
 
-def _resolve_db_urls(config: AgentGateConfig) -> tuple[str, str]:
-    bank_url = config.database.bank_url
-    if config.bank_db and Path(config.bank_db).is_absolute():
-        bank_url = f"sqlite+aiosqlite:///{Path(config.bank_db).as_posix()}"
-
-    gateway_url = config.database.gateway_url
-    if config.gateway_db and Path(config.gateway_db).is_absolute():
-        gateway_url = f"sqlite+aiosqlite:///{Path(config.gateway_db).as_posix()}"
-    return bank_url, gateway_url
+def _prepare_keys(config: AgentGateConfig) -> AgentKeyPair:
+    _load_or_create_key(Path(config.mandate_signing_key_path or "runtime/mandate.pem"))
+    _load_or_create_key(Path(config.audit_signing_key_path or "runtime/audit.pem"))
+    _load_or_create_key(Path(config.token_signing_key_path or "runtime/token.pem"))
+    return _load_or_create_key(Path(os.getenv("D06_BILLPAL_KEY") or "runtime/billpal.pem"))
 
 
 async def seed_data(profile: str) -> None:
     config = AgentGateConfig.load(profile=profile)
-    Path("runtime").mkdir(parents=True, exist_ok=True)
-    bank_url, gateway_url = _resolve_db_urls(config)
-    pair, _ = _resolve_billpal_key()
+    customer_pin = os.getenv("D06_CUSTOMER_PIN", "4821")
+    ops_id = os.getenv("D06_OPS_ID", "ops_admin")
+    ops_password = os.getenv("D06_OPS_PASSWORD")
+    if profile == "real" and not ops_password:
+        raise SystemExit("Set D06_OPS_PASSWORD for the disposable real-profile seed.")
+    pair = await asyncio.to_thread(_prepare_keys, config)
 
     # 1. Seed bank database
-    bank_engine = create_bank_db_engine(bank_url)
+    bank_engine = create_bank_db_engine(config.bank_database_url)
     async with bank_engine.begin() as conn:
         await conn.run_sync(BankBase.metadata.create_all)
 
@@ -82,21 +72,8 @@ async def seed_data(profile: str) -> None:
 
     await bank_engine.dispose()
 
-    # 2. Ensure signing keys (mandate, audit, token)
-    def _ensure_key(path_str: str | None, default_rel: str) -> Path:
-        target = Path(path_str) if path_str else Path(default_rel)
-        if not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            kp = generate_agent_keypair()
-            save_private_key_pem(kp, target, overwrite=True)
-        return target
-
-    _ensure_key(config.mandate_signing_key_path, "runtime/mandate.pem")
-    _ensure_key(config.audit_signing_key_path, "runtime/audit.pem")
-    _ensure_key(config.token_signing_key_path, "runtime/token.pem")
-
-    # 3. Seed gateway database
-    gw_engine = create_db_engine(gateway_url)
+    # 2. Seed gateway database
+    gw_engine = create_db_engine(config.gateway_database_url)
     await init_database(gw_engine, Base.metadata)
     gw_sf = create_session_factory(gw_engine)
 
@@ -108,10 +85,6 @@ async def seed_data(profile: str) -> None:
         keyring=keyring,
     )
     registry = SqlAgentRegistry(session_factory=gw_sf, clock=clock)
-
-    customer_pin = os.getenv("D06_CUSTOMER_PIN", "4821")
-    ops_id = os.getenv("D06_OPS_ID", "ops_admin")
-    ops_password = os.getenv("D06_OPS_PASSWORD", "ops-secret-2026")
 
     # Seed Customer
     async with gw_sf() as session:
@@ -128,20 +101,15 @@ async def seed_data(profile: str) -> None:
         )
 
     # Seed Operator
-    for op_name in {ops_id, "ops_admin"}:
-        async with gw_sf() as session:
-            ops_res = await session.execute(
-                select(OperatorRecord).where(OperatorRecord.operator_id == op_name)
-            )
-            ops_exists = ops_res.scalar_one_or_none() is not None
-
-        if not ops_exists:
-            await human_auth.seed_operator(
-                operator_id=op_name,
-                display_name="Ops Administrator",
-                role=HumanRole.OPS,
-                password=ops_password,
-            )
+    async with gw_sf() as session:
+        existing_ops = await session.get(OperatorRecord, ops_id)
+    if existing_ops is None:
+        await human_auth.seed_operator(
+            operator_id=ops_id,
+            display_name="Ops Administrator",
+            role=HumanRole.OPS,
+            password=ops_password or token_urlsafe(24),
+        )
 
     # Seed Registrar
     async with gw_sf() as session:
@@ -155,7 +123,7 @@ async def seed_data(profile: str) -> None:
             operator_id="reg_001",
             display_name="Agent Registrar",
             role=HumanRole.REGISTRAR,
-            password="reg-secret-2026",
+            password=os.getenv("D06_REGISTRAR_PASSWORD") or token_urlsafe(24),
         )
 
     # Seed BillPal Agent
@@ -164,9 +132,7 @@ async def seed_data(profile: str) -> None:
             select(AgentRecord).where(AgentRecord.agent_id == "agt_billpal")
         )
         existing_agent = agent_res.scalar_one_or_none()
-        agent_status = existing_agent.status if existing_agent else None
-
-    if agent_status is None:
+    if existing_agent is None:
         public_jwk = public_key_to_jwk(pair.public_key)
         await registry.register(
             name="BillPal Agent",
@@ -175,18 +141,9 @@ async def seed_data(profile: str) -> None:
             max_scopes=[e.value for e in ActionType],
             agent_id="agt_billpal",
         )
-    elif agent_status != "ACTIVE":
-        from sqlalchemy import update
-
-        async with gw_sf() as session:
-            await session.execute(
-                update(AgentRecord)
-                .where(AgentRecord.agent_id == "agt_billpal")
-                .values(status="ACTIVE")
-            )
-            await session.commit()
-
     await gw_engine.dispose()
+    if existing_agent is not None and existing_agent.jkt != pair.jkt:
+        raise SystemExit("The BillPal key does not match the registered agent in this database.")
 
     print(
         f"AgentGate seed complete for profile '{profile}': "
@@ -195,7 +152,6 @@ async def seed_data(profile: str) -> None:
 
 
 def main() -> None:
-    Path("runtime").mkdir(parents=True, exist_ok=True)
     parser = argparse.ArgumentParser(description="Seed AgentGate test/demo data")
     parser.add_argument(
         "--profile",
