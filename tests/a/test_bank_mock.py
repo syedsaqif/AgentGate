@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from bank_mock.main import create_bank_app
+from contracts.common import ActionType
 from contracts.core_models import (
     ActionParams,
-    ActionType,
-    BankResult,
     BankStatus,
     CanonicalAction,
     Intent,
@@ -55,7 +58,7 @@ def make_canonical_action(
 
 
 @pytest.fixture
-async def bank_app(tmp_path: Path):
+async def bank_app(tmp_path: Path) -> AsyncGenerator[Any, None]:
     db_file = tmp_path / "test_bank.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
     app = create_bank_app(db_url=db_url, service_key=TEST_SERVICE_KEY)
@@ -64,7 +67,7 @@ async def bank_app(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_bank_bypass_unauthenticated_fails(bank_app) -> None:
+async def test_bank_bypass_unauthenticated_fails(bank_app: Any) -> None:
     """Direct unauthenticated calls to /bank/* must be rejected with 401 or 403."""
     transport = ASGITransport(app=bank_app)
     async with AsyncClient(transport=transport, base_url="http://bank") as client:
@@ -83,7 +86,7 @@ async def test_bank_bypass_unauthenticated_fails(bank_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bank_account_ownership_validation(bank_app) -> None:
+async def test_bank_account_ownership_validation(bank_app: Any) -> None:
     """Requests attempting to read or debit an account with wrong customer ID must be rejected."""
     transport = ASGITransport(app=bank_app)
     headers = {"X-Bank-Service-Key": TEST_SERVICE_KEY}
@@ -104,7 +107,7 @@ async def test_bank_account_ownership_validation(bank_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bank_payment_same_key_debits_once(bank_app) -> None:
+async def test_bank_payment_same_key_debits_once(bank_app: Any) -> None:
     """Same idempotency key + identical payload must debit once and return the same result."""
     transport = ASGITransport(app=bank_app)
     headers = {"X-Bank-Service-Key": TEST_SERVICE_KEY}
@@ -150,7 +153,7 @@ async def test_bank_payment_same_key_debits_once(bank_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bank_payment_same_key_changed_payload_conflicts(bank_app) -> None:
+async def test_bank_payment_same_key_changed_payload_conflicts(bank_app: Any) -> None:
     """Same idempotency key with altered payload must return 409 conflict and not debit."""
     transport = ASGITransport(app=bank_app)
     headers = {"X-Bank-Service-Key": TEST_SERVICE_KEY}
@@ -182,7 +185,7 @@ async def test_bank_payment_same_key_changed_payload_conflicts(bank_app) -> None
 
 
 @pytest.mark.asyncio
-async def test_bank_insufficient_funds_rejected(bank_app) -> None:
+async def test_bank_insufficient_funds_rejected(bank_app: Any) -> None:
     """Payments exceeding account balance must fail with 422 E_BANK_INSUFFICIENT_FUNDS."""
     transport = ASGITransport(app=bank_app)
     headers = {"X-Bank-Service-Key": TEST_SERVICE_KEY}
@@ -208,7 +211,7 @@ async def test_bank_insufficient_funds_rejected(bank_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bank_operation_lookup(bank_app) -> None:
+async def test_bank_operation_lookup(bank_app: Any) -> None:
     """GET /bank/operations/{key} must return the recorded executed operation."""
     transport = ASGITransport(app=bank_app)
     headers = {"X-Bank-Service-Key": TEST_SERVICE_KEY}
@@ -244,7 +247,7 @@ async def test_bank_operation_lookup(bank_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_bank_client_with_bank_mock(bank_app) -> None:
+async def test_http_bank_client_with_bank_mock(bank_app: Any) -> None:
     """HttpBankClient wired to bank_mock via ASGITransport satisfies BankClient protocol."""
     transport = ASGITransport(app=bank_app)
     client = HttpBankClient(

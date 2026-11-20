@@ -135,7 +135,8 @@ def build_test_dependencies(
 ) -> Dependencies:
     """Build default dependencies for the test profile using support test doubles."""
     # Lazy import to avoid loading test modules in production
-    from contracts.risk_models import RiskLevel, RiskResult
+    from contracts.common import FinalDecision, RiskLevel
+    from contracts.risk_models import RiskResult
     from tests.support.a.providers import FakeBank
     from tests.support.b.providers import FixtureIdentityVerifier, MemoryAuditLog
     from tests.support.c.providers import FixtureRiskEngine, RecordingExecutionPort
@@ -153,7 +154,7 @@ def build_test_dependencies(
     default_risk = RiskResult(
         score=20,
         level=RiskLevel.LOW,
-        recommended="ALLOW",
+        recommended=FinalDecision.ALLOW,
         signals=(),
         breaker_recommended=False,
         breaker_reasons=(),

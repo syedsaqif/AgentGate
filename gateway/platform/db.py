@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import MetaData, event, text
+from sqlalchemy import MetaData, event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,7 +27,7 @@ class Base(DeclarativeBase):
 
 
 def create_db_engine(db_url: str, echo: bool = False) -> AsyncEngine:
-    """Create an AsyncEngine with SQLite WAL, busy_timeout, foreign_keys, and synchronous PRAGMAs."""
+    """Create AsyncEngine with SQLite WAL, busy_timeout, foreign_keys, and PRAGMAs."""
     engine = create_async_engine(db_url, echo=echo)
 
     @event.listens_for(engine.sync_engine, "connect")

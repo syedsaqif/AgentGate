@@ -19,7 +19,6 @@ from bank_mock.schema import (
     LedgerTable,
     PayeeTable,
 )
-from contracts.canonical import canonical_json, sha256_prefixed
 from contracts.core_models import BankResult, BankStatus
 from contracts.reason_codes import ReasonCode
 
@@ -121,11 +120,15 @@ async def process_payment(
 
     # 3. Balance verification
     if account.balance_paise < request.amount_paise:
+        msg = (
+            f"Insufficient funds: balance {account.balance_paise} paise is less "
+            f"than payment {request.amount_paise} paise"
+        )
         raise HTTPException(
             status_code=422,
             detail={
                 "code": ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value,
-                "message": f"Insufficient funds: balance {account.balance_paise} paise is less than payment {request.amount_paise} paise",
+                "message": msg,
             },
         )
 
@@ -221,11 +224,15 @@ async def process_transfer(
         )
 
     if account.balance_paise < request.amount_paise:
+        msg = (
+            f"Insufficient funds: balance {account.balance_paise} paise is less "
+            f"than transfer {request.amount_paise} paise"
+        )
         raise HTTPException(
             status_code=422,
             detail={
                 "code": ReasonCode.E_BANK_INSUFFICIENT_FUNDS.value,
-                "message": f"Insufficient funds: balance {account.balance_paise} paise is less than transfer {request.amount_paise} paise",
+                "message": msg,
             },
         )
 

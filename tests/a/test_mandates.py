@@ -4,28 +4,33 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-from contracts.canonical import canonical_json, sha256_prefixed
-from contracts.common import ActionType
-from contracts.core_models import Grant, MandateStatus, StepUpRules, TimeWindow
 from contracts.reason_codes import ReasonCode
 from gateway.main import create_app
 from tests.support.b.providers import MemoryAuditLog
 
 
 @pytest.fixture
-def mandate_test_env(tmp_path: Path):
+async def mandate_test_env(
+    tmp_path: Path,
+) -> AsyncGenerator[tuple[Any, str], None]:
     db_file = tmp_path / "test_gateway_mandates.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
     app = create_app(
         profile="test",
         overrides={"database": {"gateway_url": db_url, "wal": True}},
     )
-    return app, db_url
+    yield app, db_url
+    if hasattr(app.state, "engine") and app.state.engine is not None:
+        await app.state.engine.dispose()
 
 
 def make_valid_mandate_payload(
@@ -36,7 +41,7 @@ def make_valid_mandate_payload(
     max_total_paise: int = 1000000,
     max_count: int = 5,
     pin: str = "4821",
-) -> dict:
+) -> dict[str, Any]:
     now = datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC)
     return {
         "agent_id": agent_id,
@@ -72,7 +77,7 @@ def make_valid_mandate_payload(
 
 
 @pytest.mark.asyncio
-async def test_mandate_creation_happy_path(mandate_test_env) -> None:
+async def test_mandate_creation_happy_path(mandate_test_env: tuple[Any, str]) -> None:
     """Happy path mandate creation: signed terms, usage rows initialized to zero, audit recorded."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
@@ -80,7 +85,9 @@ async def test_mandate_creation_happy_path(mandate_test_env) -> None:
 
     payload = make_valid_mandate_payload()
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         assert res.status_code == 201
         data = res.json()
@@ -118,7 +125,9 @@ async def test_mandate_creation_happy_path(mandate_test_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mandate_creation_pin_failure_rejected(mandate_test_env) -> None:
+async def test_mandate_creation_pin_failure_rejected(
+    mandate_test_env: tuple[Any, str],
+) -> None:
     """Invalid PIN must fail with HTTP 403 E_ESC_BAD_PIN without creating mandate."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
@@ -126,7 +135,9 @@ async def test_mandate_creation_pin_failure_rejected(mandate_test_env) -> None:
 
     payload = make_valid_mandate_payload(pin="9999")  # Correct PIN is 4821
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         assert res.status_code == 403
         assert res.json()["error"]["code"] == ReasonCode.E_ESC_BAD_PIN.value
@@ -137,7 +148,9 @@ async def test_mandate_creation_pin_failure_rejected(mandate_test_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mandate_creation_auth_and_role_checks(mandate_test_env) -> None:
+async def test_mandate_creation_auth_and_role_checks(
+    mandate_test_env: tuple[Any, str],
+) -> None:
     """Missing session token or ops session attempting customer route must be rejected."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
@@ -160,13 +173,17 @@ async def test_mandate_creation_auth_and_role_checks(mandate_test_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mandate_creation_constraint_validations(mandate_test_env) -> None:
+async def test_mandate_creation_constraint_validations(
+    mandate_test_env: tuple[Any, str],
+) -> None:
     """Verify constraint rejections: unowned account, unknown payee, scope ceiling, etc."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
     headers = {"Authorization": "Bearer cust_session_001"}
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         # 1. Account belongs to cust_002, not cust_001
         p_wrong_acc = make_valid_mandate_payload(from_account="ACC-002")
         res1 = await client.post("/v1/customer/mandates", json=p_wrong_acc)
@@ -191,7 +208,9 @@ async def test_mandate_creation_constraint_validations(mandate_test_env) -> None
         assert res4.status_code == 400
 
         # 5. max_per_txn_paise > max_total_paise
-        p_bad_caps = make_valid_mandate_payload(max_per_txn_paise=2000000, max_total_paise=1000000)
+        p_bad_caps = make_valid_mandate_payload(
+            max_per_txn_paise=2000000, max_total_paise=1000000
+        )
         res5 = await client.post("/v1/customer/mandates", json=p_bad_caps)
         assert res5.status_code == 400
 
@@ -210,7 +229,9 @@ async def test_mandate_creation_constraint_validations(mandate_test_env) -> None
 
 
 @pytest.mark.asyncio
-async def test_mandate_cross_customer_isolation(mandate_test_env) -> None:
+async def test_mandate_cross_customer_isolation(
+    mandate_test_env: tuple[Any, str],
+) -> None:
     """Customer B's GET /v1/customer/mandates must never see Customer A's mandates."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
@@ -241,7 +262,9 @@ async def test_mandate_cross_customer_isolation(mandate_test_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mandate_creation_audit_failure_rolls_back(mandate_test_env) -> None:
+async def test_mandate_creation_audit_failure_rolls_back(
+    mandate_test_env: tuple[Any, str],
+) -> None:
     """If audit log append fails, the unit of work transaction must rollback cleanly."""
     app, _ = mandate_test_env
     transport = ASGITransport(app=app)
@@ -251,7 +274,9 @@ async def test_mandate_creation_audit_failure_rolls_back(mandate_test_env) -> No
     app.state.deps.audit_log.fail_append = True
     payload = make_valid_mandate_payload()
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         # Audit failure results in 500 / error
         assert res.status_code in (500, 503)

@@ -8,7 +8,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+# Import models to ensure they are registered in Base.metadata
+import gateway.mandates.models  # noqa: F401
 from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
 from gateway.deps import Dependencies, build_dependencies
@@ -38,9 +41,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Teardown database resources
-    engine = getattr(app.state, "engine", None)
-    if engine is not None:
-        await engine.dispose()
+    engine_to_dispose: AsyncEngine | None = getattr(app.state, "engine", None)
+    if engine_to_dispose is not None:
+        await engine_to_dispose.dispose()
 
 
 def create_app(
@@ -66,14 +69,42 @@ def create_app(
     app.state.deps = deps
     app.state.overrides = overrides
 
+    if config.database.gateway_url:
+        engine = create_db_engine(config.database.gateway_url)
+        session_factory = create_session_factory(engine)
+        app.state.engine = engine
+        app.state.session_factory = session_factory
+        db_url = config.database.gateway_url
+        if "sqlite" in db_url:
+            raw_path = db_url.split(":///")[-1]
+            try:
+                import sqlite3
+
+                from sqlalchemy.schema import CreateTable
+
+                s_conn = sqlite3.connect(raw_path)
+                try:
+                    for table in Base.metadata.sorted_tables:
+                        ddl = str(CreateTable(table).compile(dialect=engine.sync_engine.dialect))
+                        clean_ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+                        s_conn.execute(clean_ddl)
+                    s_conn.commit()
+                finally:
+                    s_conn.close()
+            except Exception:
+                pass
+
     # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
 
     # Register uniform error envelope handlers
     register_error_handlers(app)
 
-    # Mount platform health router
+    # Mount platform routers
+    from gateway.mandates.routes import router as mandates_router
+
     app.include_router(health_router)
+    app.include_router(mandates_router)
 
     return app
 

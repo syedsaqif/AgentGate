@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from contracts.common import ActionType, RiskLevel
+from contracts.common import ActionType, FinalDecision, RiskLevel
 from contracts.core_models import ActionParams, CanonicalAction, Intent
 from contracts.escalation_models import EscalationDecision
 from contracts.reason_codes import ReasonCode
@@ -68,7 +68,7 @@ def _make_assessment() -> RiskResult:
     return RiskResult(
         score=50,
         level=RiskLevel.MEDIUM,
-        recommended="ESCALATE",
+        recommended=FinalDecision.ESCALATE,
         signals=(
             RiskSignal(
                 name="amount_outlier",
