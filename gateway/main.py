@@ -261,6 +261,34 @@ def create_app(
     app.include_router(pipeline_router)
     app.include_router(events_router)
 
+    # Mount Member B identity router if identity services are configured
+    if (
+        deps.agent_registry is not None
+        and deps.human_auth is not None
+        and deps.token_service is not None
+    ):
+        from gateway.identity.routes import build_identity_router, install_identity_error_handlers
+
+        install_identity_error_handlers(app)
+        identity_router = build_identity_router(
+            registry=deps.agent_registry,
+            human_auth=deps.human_auth,
+            token_service=deps.token_service,
+            lifecycle=deps.lifecycle,
+        )
+        app.include_router(identity_router)
+
+    # Mount Member B audit router if audit log is configured
+    if deps.audit_log is not None and deps.human_auth is not None:
+        from gateway.audit.routes import build_audit_router, install_audit_error_handlers
+
+        install_audit_error_handlers(app)
+        audit_router = build_audit_router(
+            audit_log=deps.audit_log,
+            human_auth=deps.human_auth,
+        )
+        app.include_router(audit_router)
+
     # Mount Member C escalation router if escalation service is configured
     if deps.escalation_service is not None:
         from gateway.escalation.routes import create_escalation_router

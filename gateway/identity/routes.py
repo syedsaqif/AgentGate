@@ -99,13 +99,17 @@ def install_identity_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(
-        request: Request, _exc: RequestValidationError
+        request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         req_id = _request_id_for(request)
+        first_error = exc.errors()[0] if exc.errors() else {}
+        loc = " -> ".join(str(elem) for elem in first_error.get("loc", []))
+        msg = first_error.get("msg", "Request validation failed.")
+        detail_msg = f"{loc}: {msg}" if loc else msg
         envelope = ErrorEnvelope(
             error=ErrorDetail(
                 code=ReasonCode.E_REQ_INVALID.value,
-                message="Request validation failed.",
+                message=detail_msg,
                 request_id=req_id,
             )
         )

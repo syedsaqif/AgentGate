@@ -131,6 +131,28 @@ class MemoryAuditLog:
     async def checkpoint(self) -> AuditRef:
         return AuditRef(seq=max(1, len(self.events)), entry_hash="0" * 64)
 
+    async def list_entries(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        event_type: str | None = None,
+        request_id: str | None = None,
+        customer_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> Any:
+        from contracts.common import Page
+        items = list(self.events)
+        if event_type:
+            items = [e for e in items if e.event_type == event_type]
+        if request_id:
+            items = [e for e in items if e.request_id == request_id]
+        if customer_id:
+            items = [e for e in items if e.customer_id == customer_id]
+        if agent_id:
+            items = [e for e in items if e.agent_id == agent_id]
+        return Page(items=items[:limit], next_cursor=None)
+
     async def evidence(self, request_id: OpaqueId) -> EvidenceBundle:
         bundle = self.evidence_by_request.get(request_id)
         if bundle is None:
