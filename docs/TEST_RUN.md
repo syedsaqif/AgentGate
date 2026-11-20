@@ -66,3 +66,13 @@ Measurements remain pending for race overspends, p95 decision latency excluding 
 | Independent teammate clean-reset run | Pending | Pending | Pending |
 
 **Successful recording location** · Pending. Record the retrievable location and tested revision after a successful rehearsal. Store the recording outside Git.
+
+## D08 frontend walkthrough
+
+- D07 checkpoint and D08 base: `99f737cb8965dbb3169ca18ae097a0cad472f6f7`. D08 used the mock Vite startup in the README with two separate Chromium contexts.
+- Inspected 1280×720 and 1920×1080 full viewport, plus 640×720 and 960×1080 half-width viewports for side-by-side windows. The approval card showed ₹4,800.00, PENDING, masked account, reasons, and the separately labelled escaped unverified note. The mandate form reached review with fingerprint, payee, caps and expiry. Ops showed ALLOW/ESCALATE decisions, request/agent IDs, ACTIVE/SUSPENDED status, and the verification report through anchor #5 with a consistent suffix.
+- The audit fixture `req_mock_s11` opened and its downloaded JSON contained `mnd_mock_historical`. It is independent of the approval fixture, so this walkthrough cannot demonstrate matching S9 receipt and S11 evidence. S1, S2, S6, S7, S8, real S9, S5, and real tamper detection need integrated providers and scenario drivers.
+- At 640 pixels the evidence is a dense, wrapped JSON block with small monospace text. The guide now asks the presenter to maximize Ops for evidence. The audit table timestamp wraps at 640 pixels. No document-level horizontal overflow was observed. Audit, review and receipt panels require vertical scrolling.
+- The mock indicator scrolled out of view at 1280×720 during the first inspection. It is now sticky and was rechecked after scrolling at all four viewport sizes. Local screenshots are in the system temporary `agentgate-d08` directory.
+- The D08 checkout passed 111 frontend tests across 10 files. API bindings check, typecheck, and build also passed. The 114-test result above belongs to the separate D06 checkout.
+- This is a fixture walkthrough with **zero real rehearsals**. Physical projector, actual audience readability, independent clean reset, three real rehearsals, real gateway confirmation and a backup recording remain pending.
