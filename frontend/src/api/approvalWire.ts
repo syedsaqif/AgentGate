@@ -52,14 +52,17 @@ function isActionStatus(value: unknown): value is ActionStatus {
     || value === "EXECUTED" || value === "REJECTED" || value === "EXECUTION_UNKNOWN" || value === "FAILED";
 }
 
-function isReceipt(value: unknown): value is AuditReceipt {
+export function isReceipt(value: unknown): value is AuditReceipt {
   return isRecord(value) && isNonnegativeInteger(value.seq) && value.seq > 0
     && typeof value.entry_hash === "string" && /^[0-9a-f]{64}$/.test(value.entry_hash);
 }
 
-export function observeDecision(payload: unknown, status: number, expectedId: string): DecisionObservation {
+export function observeDecision(payload: unknown, status: number, expectedId: string, expectedRequestId?: string): DecisionObservation {
   const processing = status === 202;
-  if (!isRecord(payload) || (payload.escalation_id !== undefined && payload.escalation_id !== expectedId)) {
+  if (!isRecord(payload) || (payload.escalation_id !== undefined && payload.escalation_id !== expectedId)
+    || (expectedRequestId && payload.request_id !== undefined && payload.request_id !== expectedRequestId)
+    || (expectedRequestId && isRecord(payload.result) && payload.result.request_id !== undefined
+      && payload.result.request_id !== expectedRequestId)) {
     return { processing };
   }
   const result = isRecord(payload.result) && isActionStatus(payload.result.status)

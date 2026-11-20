@@ -3,6 +3,7 @@ import type { ApprovalItem, ApprovalPage, CustomerDecision } from "../../api/app
 import type { ShellApi } from "../../api/client";
 import { ApiError } from "../../api/errors";
 import { ErrorNotice } from "../../components/ErrorNotice";
+import { useCustomerReceipts } from "./useCustomerReceipts";
 import { ApprovalCard } from "./ApprovalCard";
 import { ApprovalResult, type ObservedDecision } from "./ApprovalResult";
 
@@ -17,6 +18,8 @@ export function ApprovalInbox({ api, token, endSession }: ApprovalInboxProps) {
   const [decisionFailure, setDecisionFailure] = useState<ApiError>();
   const [observed, setObserved] = useState<ObservedDecision[]>([]);
   const active = useRef<AbortController | null>(null);
+
+  const { receipts, track, connection } = useCustomerReceipts(api, token, endSession);
 
   const run = useCallback(async (requestedCursor: string | null, decision?: Decision) => {
     if (active.current) return;
@@ -35,8 +38,9 @@ export function ApprovalInbox({ api, token, endSession }: ApprovalInboxProps) {
         setDecisionFailure(undefined);
         const { item, choice } = decision;
         const response = { id: item.escalation_id, requestId: item.request_id };
+        if (choice.decision === "APPROVE") track(item.request_id);
         try {
-          const observation = await api.decideApproval(token, item.escalation_id, choice, signal);
+          const observation = await api.decideApproval(token, item.escalation_id, choice, signal, item.request_id);
           if (signal.aborted) return;
           setObserved((previous) => [{ ...response, observation }, ...previous]);
         } catch (failure) {
@@ -68,7 +72,7 @@ export function ApprovalInbox({ api, token, endSession }: ApprovalInboxProps) {
         setBusy(false);
       }
     }
-  }, [api, token, endSession]);
+  }, [api, token, endSession, track]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +87,7 @@ export function ApprovalInbox({ api, token, endSession }: ApprovalInboxProps) {
   return (
     <section className="panel approval-inbox" aria-labelledby="approval-inbox-title" aria-busy={busy}>
       <h2 id="approval-inbox-title">Approval inbox</h2>
+      <p role="status">{connection}</p>
       {decisionFailure && <ErrorNotice error={decisionFailure} />}
       {readFailure && (
         <>
@@ -110,7 +115,7 @@ export function ApprovalInbox({ api, token, endSession }: ApprovalInboxProps) {
         <section className="approval-results" aria-labelledby="approval-results-title" aria-live="polite">
           <h3 id="approval-results-title">Last decision responses</h3>
           <p>The pending inbox only shows which requests are awaiting a decision. It cannot confirm a final result.</p>
-          <ul>{observed.map((response) => <ApprovalResult key={response.id} response={response} />)}</ul>
+          <ul>{observed.map((response) => <ApprovalResult key={response.id} response={response} streamReceipt={receipts.get(response.requestId)} />)}</ul>
         </section>
       )}
     </section>

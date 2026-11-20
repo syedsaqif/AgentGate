@@ -52,6 +52,8 @@ The provisional response fields are isolated in [approvalWire.ts](approvalWire.t
 
 The Customer inbox query supports only `status=PENDING`. Its refresh can show absence from the pending set. The two documented single-item reads, `GET /v1/escalations/{id}` and `GET /v1/actions/{request_id}`, require agent DPoP. The team plan §6.8 documents a Customer-filtered `GET /v1/customer/stream` notification with `event_type: bank.executed`, `request_id`, and `data.audit_ref`. It describes best-effort delivery and bounded replay. The OpenAPI stream entry supplies no event schema and the checked-out gateway does not mount a Customer stream. C and A need to publish a Customer-owned final-result and receipt read, or specify how a Customer can recover the receipt after missing the event. D03 retains the processing observation and limits refresh to the pending GET. It never resends a decision for status.
 
+D06 opens the Customer bearer stream as soon as the inbox mounts. A §6.8 `bank.executed` event can complete a 202 observation when its request ID matches the submitted approval and its payload contains an executed status and valid receipt. The live provider and replay limits still require verification. See the [D06 smoke runbook](../../../docs/d/README.md).
+
 ## D04 Ops stream and agent lifecycle
 
 All four Ops routes use the Ops bearer session. Methods, paths, the two mutation path parameters, and their `200` and `404` response keys come from the [OpenAPI snapshot](../../../contracts/openapi.json#L33). D04 has two independent reads so a failed registry request can be retried while the stream is available.
