@@ -8,7 +8,7 @@ export type ObservedDecision = {
   conflictCode?: string;
 };
 
-export function ApprovalResult({ response }: { response: ObservedDecision }) {
+export function ApprovalResult({ response, streamReceipt }: { response: ObservedDecision; streamReceipt?: AuditReceipt }) {
   const { observation, conflictCode } = response;
   const state = observation?.state;
   const result = observation?.result;
@@ -24,7 +24,9 @@ export function ApprovalResult({ response }: { response: ObservedDecision }) {
       <p>Request <code>{observation?.requestId ?? response.requestId}</code></p>
       {showState && <p>Reported approval state <strong>{state}</strong></p>}
       {conflictState && <p>Provider conflict <strong>{conflictState}</strong></p>}
-      {observation?.processing ? (
+      {streamReceipt && observation?.processing && (!observation.requestId || observation.requestId === response.requestId) ? (
+        <><p>Customer stream confirmed execution <strong>EXECUTED</strong></p><Receipt receipt={streamReceipt} /></>
+      ) : observation?.processing ? (
         <p>Processing. Final execution and receipt are unconfirmed.</p>
       ) : (
         <>

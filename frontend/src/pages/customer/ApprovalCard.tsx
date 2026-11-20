@@ -26,6 +26,7 @@ export function ApprovalCard({ item, disabled, submitted, decide }: {
   return (
     <article className="mandate-record approval-card">
       <h3>{payee?.display_name ?? "Payee unavailable"}</h3>
+      <p>Request <code>{item.request_id}</code></p>
       <dl className="mandate-usage">
         <div><dt>Approval state</dt><dd>{item.state}</dd></div>
         <div><dt>Account</dt><dd>{from_account.masked_label.replaceAll(from_account.account_id, "••••")}</dd></div>

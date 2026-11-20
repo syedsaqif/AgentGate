@@ -60,7 +60,7 @@ describe("fixture-backed workspaces", () => {
     expect(reads.map(([path]) => path).sort()).toEqual([
       shellRoutes[role].read,
       ...(role === "customer"
-        ? [`${approvalPath}?status=PENDING`, mandatePath]
+        ? [`${approvalPath}?status=PENDING`, mandatePath, "/v1/customer/stream"]
         : [opsStreamPath, auditEntriesPath]),
     ].sort());
     expect(new Headers(loginInit.headers).get("Authorization")).toBeNull();

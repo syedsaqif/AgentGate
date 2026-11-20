@@ -136,6 +136,7 @@ function MandateRecord({ item, bootstrap, disabled, revoke }: {
   return (
     <article className="mandate-record">
       <h3>{agent ? `${agent.name} · ${agent.vendor}` : terms.agent_id}</h3>
+      <p>Mandate <code>{terms.mandate_id}</code></p>
       <p>{status} · Expires <time dateTime={terms.valid_until}>{formatKolkataTimestamp(terms.valid_until)}</time></p>
       <ul>
         {terms.grants.map((grant) => {

@@ -1,4 +1,4 @@
-type SseFrame = { id?: string; event: string; data: string };
+export type SseFrame = { id?: string; event: string; data: string };
 
 export async function readSse(
   body: ReadableStream<Uint8Array>, signal: AbortSignal, onFrame: (frame: SseFrame) => void,
