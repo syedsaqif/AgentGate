@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,7 @@ from contracts.audit_models import AuditEvent
 from contracts.common import (
     ActionType,
     FinalDecision,
+    HumanRole,
     OpaqueId,
     Paise,
     PolicyVerdict,
@@ -69,44 +70,10 @@ def get_dependencies(request: Request) -> Dependencies:
     return deps
 
 
-async def process_money_action(
-    request: Request,
-    action_type: ActionType,
-) -> JSONResponse:
-    """Execute the canonical 8-step request pipeline and decision combiner."""
-    deps = get_dependencies(request)
-    request_id = get_or_create_request_id(request)
-
-    # 1. Edge: Validate Idempotency-Key header and raw request body
-    idempotency_key = (
-        request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key")
-    )
-    if not idempotency_key or not idempotency_key.strip():
-        raise AgentGateError(
-            code=ReasonCode.E_REQ_INVALID,
-            message="Header 'Idempotency-Key' is required for money actions",
-            status_code=400,
-        )
-    idempotency_key = idempotency_key.strip()
-
-    raw_bytes = await request.body()
-    if not raw_bytes:
-        raise AgentGateError(
-            code=ReasonCode.E_REQ_INVALID,
-            message="Request body cannot be empty",
-            status_code=400,
-        )
-
-    try:
-        parsed = MoneyActionRequest.model_validate_json(raw_bytes)
-    except Exception as exc:
-        raise AgentGateError(
-            code=ReasonCode.E_REQ_INVALID,
-            message=f"Invalid request body: {exc}",
-            status_code=400,
-        ) from exc
-
-    # 2. Identity: Authenticate cryptographic proof and DPoP token
+async def authenticate_agent(
+    request: Request, raw_bytes: bytes, deps: Dependencies
+) -> AuthContext:
+    """Authenticate agent DPoP proof and token with write-ahead failure auditing."""
     if deps.identity_verifier is None:
         raise AgentGateError(
             code=ReasonCode.E_SERVICE_UNAVAILABLE,
@@ -115,7 +82,7 @@ async def process_money_action(
         )
 
     try:
-        auth_ctx: AuthContext = await deps.identity_verifier.authenticate(
+        return await deps.identity_verifier.authenticate(
             request_bytes=raw_bytes,
             headers=dict(request.headers),
             method=request.method,
@@ -154,10 +121,51 @@ async def process_money_action(
                 code=reason, message="Authentication failed", status_code=st
             ) from exc
         raise AgentGateError(
-            code=ReasonCode.E_AUTH_INVALID_TOKEN,
-            message=f"Authentication failed: {exc}",
+            code=ReasonCode.E_AUTH_PROOF_INVALID,
+            message=f"Agent identity authentication failed: {exc}",
             status_code=401,
         ) from exc
+
+
+async def process_money_action(
+    request: Request,
+    action_type: ActionType,
+) -> JSONResponse:
+    """Execute the canonical 8-step request pipeline and decision combiner."""
+    deps = get_dependencies(request)
+    request_id = get_or_create_request_id(request)
+
+    # 1. Edge: Validate Idempotency-Key header and raw request body
+    idempotency_key = (
+        request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key")
+    )
+    if not idempotency_key or not idempotency_key.strip():
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message="Header 'Idempotency-Key' is required for money actions",
+            status_code=400,
+        )
+    idempotency_key = idempotency_key.strip()
+
+    raw_bytes = await request.body()
+    if not raw_bytes:
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message="Request body cannot be empty",
+            status_code=400,
+        )
+
+    try:
+        parsed = MoneyActionRequest.model_validate_json(raw_bytes)
+    except Exception as exc:
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message=f"Invalid request body: {exc}",
+            status_code=400,
+        ) from exc
+
+    # 2. Identity: Authenticate cryptographic proof and DPoP token
+    auth_ctx = await authenticate_agent(request, raw_bytes, deps)
 
     # Check agent status in AgentRegistry if configured
     if deps.agent_registry is not None:
@@ -549,3 +557,434 @@ async def pay_bill(request: Request) -> JSONResponse:
 async def transfer(request: Request) -> JSONResponse:
     """Submit a transfer request through the policy and risk pipeline."""
     return await process_money_action(request, ActionType.TRANSFER)
+
+
+@router.get("/accounts/{account_id}/balance")
+async def get_balance(account_id: str, request: Request) -> JSONResponse:
+    """Agent read of account balance scoped to active mandate."""
+    deps: Dependencies = request.app.state.deps
+    raw_bytes = await request.body()
+    auth = await authenticate_agent(request, raw_bytes, deps)
+
+    if deps.mandate_reader is None or deps.policy_evaluator is None or deps.usage_reader is None:
+        raise AgentGateError(
+            code=ReasonCode.E_SERVICE_UNAVAILABLE,
+            message="Mandate services not configured",
+            status_code=503,
+        )
+
+    # Fetch and validate mandate
+    mandate_snapshot = await deps.mandate_reader.get(auth.mandate_id)
+    if str(mandate_snapshot.status) != str(MandateStatus.ACTIVE):
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Mandate is not active",
+            status_code=403,
+        )
+    if mandate_snapshot.terms.agent_id != auth.agent_id:
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Agent does not match mandate",
+            status_code=403,
+        )
+    if mandate_snapshot.terms.customer_id != auth.customer_id:
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Customer does not match mandate",
+            status_code=403,
+        )
+
+    request_id = get_or_create_request_id(request)
+    now = deps.clock.now()
+
+    canonical_action = CanonicalAction(
+        request_id=request_id,
+        customer_id=auth.customer_id,
+        agent_id=auth.agent_id,
+        mandate_id=auth.mandate_id,
+        mandate_hash=auth.mandate_hash,
+        action_type=ActionType.BALANCE_READ,
+        params=ActionParams(
+            from_account=account_id,
+            amount_paise=0,
+            currency="INR",
+        ),
+        intent=Intent(
+            task="balance_inquiry",
+            category="account.read",
+        ),
+        idempotency_key=request_id,
+        received_at=now,
+    )
+
+    # Evaluate policy
+    usage = await deps.usage_reader.get(auth.mandate_id)
+    policy_result = deps.policy_evaluator.evaluate(canonical_action, mandate_snapshot, usage, now)
+
+    if policy_result.verdict == PolicyVerdict.DENY:
+        deny_code = (
+            policy_result.reason_codes[0]
+            if policy_result.reason_codes
+            else ReasonCode.E_REQ_INVALID.value
+        )
+        raise AgentGateError(
+            code=deny_code,
+            message=f"Policy denied balance read: {deny_code}",
+            status_code=403,
+        )
+
+    # Score risk & record attempt
+    if deps.risk_engine is not None:
+        risk_input = RiskInput(
+            auth=auth,
+            action=canonical_action,
+            policy=policy_result,
+            mandate=mandate_snapshot,
+            history=HistorySnapshot(),
+            now=now,
+            attempt_id=f"att_{request_id}",
+        )
+        risk_result = deps.risk_engine.score(risk_input)
+        if deps.unit_of_work is not None:
+            async with deps.unit_of_work as tx:
+                await deps.risk_engine.record_attempt(risk_input, tx)
+        if risk_result.breaker_recommended or risk_result.level == RiskLevel.HIGH:
+            code = (
+                ReasonCode.E_RISK_BREAKER_OPEN
+                if risk_result.breaker_recommended
+                else ReasonCode.E_RISK_HIGH
+            )
+            raise AgentGateError(
+                code=code,
+                message="Balance read blocked by risk engine",
+                status_code=403,
+            )
+
+    # Write-ahead audit
+    audit_ref = None
+    if deps.audit_log is not None:
+        audit_event = AuditEvent(
+            event_type="action.balance_read",
+            request_id=request_id,
+            customer_id=auth.customer_id,
+            agent_id=auth.agent_id,
+            mandate_id=auth.mandate_id,
+            decision="ALLOW",
+            occurred_at=now,
+            safe_payload={"account_id": account_id},
+        )
+        audit_ref = await deps.audit_log.append(audit_event)
+
+    # Call BankClient
+    if deps.bank_client is None:
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank client not configured",
+            status_code=502,
+        )
+
+    if hasattr(deps.bank_client, "get_balance"):
+        bank_res = await deps.bank_client.get_balance(account_id, auth.customer_id)
+    elif hasattr(deps.bank_client, "balance"):
+        bank_res = await deps.bank_client.balance(account_id, auth.customer_id)
+    else:
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank client does not support get_balance",
+            status_code=502,
+        )
+
+    balance_paise = (
+        bank_res.get("balance_paise")
+        if isinstance(bank_res, dict)
+        else getattr(bank_res, "balance_paise", 0)
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "account_id": account_id,
+            "customer_id": auth.customer_id,
+            "balance_paise": balance_paise,
+            "currency": "INR",
+            "audit_ref": audit_ref.model_dump(mode="json") if audit_ref else None,
+        },
+    )
+
+
+@router.get("/accounts/{account_id}/transactions")
+async def get_transactions(
+    account_id: str,
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query()] = None,
+) -> JSONResponse:
+    """Agent read of account transaction history scoped to active mandate."""
+    deps: Dependencies = request.app.state.deps
+    raw_bytes = await request.body()
+    auth = await authenticate_agent(request, raw_bytes, deps)
+
+    if deps.mandate_reader is None or deps.policy_evaluator is None or deps.usage_reader is None:
+        raise AgentGateError(
+            code=ReasonCode.E_SERVICE_UNAVAILABLE,
+            message="Mandate services not configured",
+            status_code=503,
+        )
+
+    # Fetch and validate mandate
+    mandate_snapshot = await deps.mandate_reader.get(auth.mandate_id)
+    if str(mandate_snapshot.status) != str(MandateStatus.ACTIVE):
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Mandate is not active",
+            status_code=403,
+        )
+    if mandate_snapshot.terms.agent_id != auth.agent_id:
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Agent does not match mandate",
+            status_code=403,
+        )
+    if mandate_snapshot.terms.customer_id != auth.customer_id:
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH,
+            message="Customer does not match mandate",
+            status_code=403,
+        )
+
+    request_id = get_or_create_request_id(request)
+    now = deps.clock.now()
+
+    canonical_action = CanonicalAction(
+        request_id=request_id,
+        customer_id=auth.customer_id,
+        agent_id=auth.agent_id,
+        mandate_id=auth.mandate_id,
+        mandate_hash=auth.mandate_hash,
+        action_type=ActionType.TRANSACTIONS_READ,
+        params=ActionParams(
+            from_account=account_id,
+            amount_paise=0,
+            currency="INR",
+        ),
+        intent=Intent(
+            task="transactions_inquiry",
+            category="account.read",
+        ),
+        idempotency_key=request_id,
+        received_at=now,
+    )
+
+    # Evaluate policy
+    usage = await deps.usage_reader.get(auth.mandate_id)
+    policy_result = deps.policy_evaluator.evaluate(canonical_action, mandate_snapshot, usage, now)
+
+    if policy_result.verdict == PolicyVerdict.DENY:
+        deny_code = (
+            policy_result.reason_codes[0]
+            if policy_result.reason_codes
+            else ReasonCode.E_REQ_INVALID.value
+        )
+        raise AgentGateError(
+            code=deny_code,
+            message=f"Policy denied transactions read: {deny_code}",
+            status_code=403,
+        )
+
+    # Score risk & record attempt
+    if deps.risk_engine is not None:
+        risk_input = RiskInput(
+            auth=auth,
+            action=canonical_action,
+            policy=policy_result,
+            mandate=mandate_snapshot,
+            history=HistorySnapshot(),
+            now=now,
+            attempt_id=f"att_{request_id}",
+        )
+        risk_result = deps.risk_engine.score(risk_input)
+        if deps.unit_of_work is not None:
+            async with deps.unit_of_work as tx:
+                await deps.risk_engine.record_attempt(risk_input, tx)
+        if risk_result.breaker_recommended or risk_result.level == RiskLevel.HIGH:
+            code = (
+                ReasonCode.E_RISK_BREAKER_OPEN
+                if risk_result.breaker_recommended
+                else ReasonCode.E_RISK_HIGH
+            )
+            raise AgentGateError(
+                code=code,
+                message="Transactions read blocked by risk engine",
+                status_code=403,
+            )
+
+    # Write-ahead audit
+    audit_ref = None
+    if deps.audit_log is not None:
+        audit_event = AuditEvent(
+            event_type="action.transactions_read",
+            request_id=request_id,
+            customer_id=auth.customer_id,
+            agent_id=auth.agent_id,
+            mandate_id=auth.mandate_id,
+            decision="ALLOW",
+            occurred_at=now,
+            safe_payload={"account_id": account_id, "limit": limit},
+        )
+        audit_ref = await deps.audit_log.append(audit_event)
+
+    # Call BankClient
+    if deps.bank_client is None:
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank client not configured",
+            status_code=502,
+        )
+
+    if hasattr(deps.bank_client, "get_transactions"):
+        bank_res = await deps.bank_client.get_transactions(
+            account_id, auth.customer_id, limit=limit, cursor=cursor
+        )
+    elif hasattr(deps.bank_client, "transactions"):
+        bank_res = await deps.bank_client.transactions(
+            account_id, auth.customer_id, limit=limit, cursor=cursor
+        )
+    else:
+        raise AgentGateError(
+            code=ReasonCode.E_BANK_UNAVAILABLE,
+            message="Bank client does not support get_transactions",
+            status_code=502,
+        )
+
+    items = (
+        bank_res.get("items", [])
+        if isinstance(bank_res, dict)
+        else getattr(bank_res, "items", ())
+    )
+    next_cursor = (
+        bank_res.get("next_cursor")
+        if isinstance(bank_res, dict)
+        else getattr(bank_res, "next_cursor", None)
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "items": items,
+            "next_cursor": next_cursor,
+            "audit_ref": audit_ref.model_dump(mode="json") if audit_ref else None,
+        },
+    )
+
+
+@router.get("/actions/{request_id}")
+async def get_action_status(request_id: str, request: Request) -> JSONResponse:
+    """Read-only action status lookup for safe retry and uncertain recovery.
+
+    Verifies caller customer/agent binding and returns 404 for unowned actions.
+    Never executes a bank call or mutates budget.
+    """
+    deps: Dependencies = request.app.state.deps
+
+    caller_customer_id: str | None = None
+    caller_agent_id: str | None = None
+
+    auth_hdr = (
+        request.headers.get("Authorization")
+        or request.headers.get("authorization")
+        or ""
+    )
+
+    # 1. Check for human customer session if Bearer or X-Session-Token is present
+    if (
+        auth_hdr.startswith("Bearer ")
+        or "x-session-token" in request.headers
+        or "X-Session-Token" in request.headers
+    ):
+        if deps.human_auth is not None:
+            token = (
+                request.headers.get("X-Session-Token")
+                or request.headers.get("x-session-token")
+                or auth_hdr[7:].strip()
+            )
+            human = await deps.human_auth.authenticate(
+                token, required_role=HumanRole.CUSTOMER
+            )
+            caller_customer_id = human.subject_id
+
+    # 2. Otherwise check for agent proof / DPoP
+    elif (
+        auth_hdr.startswith("DPoP ")
+        or "dpop" in request.headers
+        or "DPoP" in request.headers
+    ):
+        raw_bytes = await request.body()
+        auth = await authenticate_agent(request, raw_bytes, deps)
+        caller_customer_id = auth.customer_id
+        caller_agent_id = auth.agent_id
+
+    if caller_customer_id is None:
+        raise AgentGateError(
+            code=ReasonCode.E_AUTH_MISSING,
+            message="Authentication required to lookup action status",
+            status_code=401,
+        )
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    action_store = getattr(deps, "action_reader", None)
+    if (
+        not session_factory
+        or not action_store
+        or not hasattr(action_store, "get_record")
+    ):
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message=f"Action '{request_id}' not found",
+            status_code=404,
+        )
+
+    async with session_factory() as session:
+        rec = await action_store.get_record(session, request_id)
+
+    if not rec or rec.customer_id != caller_customer_id:
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message=f"Action '{request_id}' not found",
+            status_code=404,
+        )
+
+    if caller_agent_id is not None and rec.agent_id != caller_agent_id:
+        raise AgentGateError(
+            code=ReasonCode.E_REQ_INVALID,
+            message=f"Action '{request_id}' not found",
+            status_code=404,
+        )
+
+    bank_result = None
+    if rec.bank_operation_id:
+        bank_result = {
+            "status": "EXECUTED" if rec.status == "EXECUTED" else rec.status,
+            "bank_operation_id": rec.bank_operation_id,
+            "bank_idempotency_key": rec.bank_idempotency_key,
+        }
+
+    audit_ref = None
+    if rec.audit_seq and rec.audit_hash:
+        audit_ref = {
+            "seq": rec.audit_seq,
+            "entry_hash": rec.audit_hash,
+        }
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "request_id": rec.request_id,
+            "status": rec.status,
+            "customer_id": rec.customer_id,
+            "agent_id": rec.agent_id,
+            "action_type": rec.action_type,
+            "escalation_id": rec.escalation_id,
+            "bank_result": bank_result,
+            "audit_ref": audit_ref,
+        },
+    )

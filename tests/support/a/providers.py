@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from contracts.common import HumanRole, OpaqueId, Tx
 from contracts.core_models import (
@@ -100,6 +101,51 @@ class FakeBank(BankClient):
             bank_idempotency_key=bank_idempotency_key,
         )
 
+    async def get_balance(self, account_id: str, customer_id: str) -> dict[str, Any]:
+        if self.fail_unavailable:
+            raise AgentGateError(
+                code=ReasonCode.E_BANK_UNAVAILABLE,
+                message="Simulated bank outage",
+                status_code=502,
+            )
+        return {
+            "account_id": account_id,
+            "customer_id": customer_id,
+            "balance_paise": 12315000,
+            "currency": "INR",
+        }
+
+    async def get_transactions(
+        self,
+        account_id: str,
+        customer_id: str,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        if self.fail_unavailable:
+            raise AgentGateError(
+                code=ReasonCode.E_BANK_UNAVAILABLE,
+                message="Simulated bank outage",
+                status_code=502,
+            )
+        return {
+            "items": [
+                {
+                    "entry_id": "tx_fake_001",
+                    "account_id": account_id,
+                    "entry_type": "DEBIT",
+                    "amount_paise": 50000,
+                    "balance_after_paise": 12315000,
+                    "reference": "Monthly bill",
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
+            ],
+            "next_cursor": None,
+        }
+
+    balance = get_balance
+    transactions = get_transactions
+
 
 @dataclass
 class FakeCatalog(Catalog):
@@ -159,6 +205,12 @@ class FakeCatalog(Catalog):
 
     async def get_payee(self, payee_id: str) -> PayeeCard | None:
         return self.payees.get(payee_id)
+
+    async def list_accounts_for_customer(self, customer_id: str) -> tuple[AccountCard, ...]:
+        return tuple(acc for acc in self.accounts.values() if acc.customer_id == customer_id)
+
+    async def list_payees(self) -> tuple[PayeeCard, ...]:
+        return tuple(self.payees.values())
 
 
 @dataclass

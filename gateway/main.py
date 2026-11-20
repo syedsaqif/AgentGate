@@ -14,11 +14,12 @@ from gateway.config import AgentGateConfig
 from gateway.deps import Dependencies, build_dependencies
 from gateway.errors import RequestIdMiddleware, register_error_handlers
 from gateway.events.bus import EventBus
+from gateway.events.routes import router as events_router
 from gateway.executor.actions import ActionStore
 from gateway.executor.reservations import ReservationManager
 from gateway.executor.service import ExecutionService
 from gateway.mandates.routes import router as customer_mandates_router
-from gateway.mandates.service import MandateService
+from gateway.mandates.service import MandateService, MandateUsageReader
 from gateway.pipeline import router as pipeline_router
 from gateway.platform.db import (
     Base,
@@ -64,7 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             session_factory=app.state.session_factory,
         )
         deps.mandate_reader = deps.mandate_service
-        deps.usage_reader = deps.mandate_service
+        deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
 
     # Initialize execution services if dependencies are present
@@ -172,7 +173,7 @@ def create_app(
             session_factory=app.state.session_factory,
         )
         deps.mandate_reader = deps.mandate_service
-        deps.usage_reader = deps.mandate_service
+        deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
 
     # Initialize execution services if dependencies are present
@@ -237,6 +238,13 @@ def create_app(
     app.include_router(health_router)
     app.include_router(customer_mandates_router)
     app.include_router(pipeline_router)
+    app.include_router(events_router)
+
+    # Conditionally mount dev router ONLY in test and scripted profiles
+    if profile in ("test", "scripted") and config.active_profile_settings.allow_dev_controls:
+        from gateway.platform.dev import router as dev_router
+
+        app.include_router(dev_router)
 
     return app
 

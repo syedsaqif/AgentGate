@@ -42,6 +42,18 @@ def get_action_str(action: Any) -> str:
     return str(action.value if hasattr(action, "value") else action)
 
 
+class MandateUsageReader(UsageReader):
+    """Adapter exposing the UsageReader protocol get(...) method for MandateService."""
+
+    def __init__(self, service: MandateService) -> None:
+        self._service = service
+
+    async def get(
+        self, mandate_id: str, tx: Tx | None = None
+    ) -> tuple[UsageSnapshot, ...]:
+        return await self._service.get_usage(mandate_id, tx)
+
+
 class MandateService(MandateReader, UsageReader):
     """Member A service coordinating mandate lifecycle, storage, and validation."""
 
