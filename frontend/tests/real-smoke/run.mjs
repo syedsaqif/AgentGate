@@ -48,8 +48,8 @@ async function login(page, role, secret, id, gateway) {
 }
 
 async function mandateForm(page, gateway, pin) {
-  await page.getByLabel("Account", { exact: true }).selectOption("ACC-001");
-  await page.getByLabel("Agent", { exact: true }).selectOption("agt_billpal");
+  await page.locator('select[name="account"]').selectOption("ACC-001");
+  await page.locator('select[name="agent"]').selectOption("agt_billpal");
   await page.getByLabel("Pay bills", { exact: true }).check();
   await page.locator('input[name="payee"][value="BILL-ELEC"]').check();
   await page.getByLabel("Per-transaction cap (INR)").fill("5000");

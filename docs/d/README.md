@@ -30,13 +30,13 @@ The browser assertions cover one approval POST, a correlated receipt, refetched 
 
 ### Owner handoff
 
-The latest fetch still resolves `origin/main` to the previously tested `3a18e749056c4af1a46c6efa2c0385db6394970f`. The existing smoke run exited 1. The simulated bank started and both Chromium workspaces rendered. The gateway never returned a readiness payload. Both browser sign-in attempts got no HTTP response and showed `UI_GATEWAY_UNREACHABLE`. Authenticated endpoints were blocked by startup, so their HTTP behavior remains unmeasured. The unchanged provider revision did not warrant an identical rerun.
+The combined smoke with backend `daca3fdb00c15cf1e761bc1a51364a6754d8ab2d` exited 1. The disposable seed and simulated bank startup passed, and both Chromium workspaces rendered. The real gateway refused to start without `identity_verifier`, `human_auth`, and `audit_log`. Both sign-in attempts got no HTTP response and showed `UI_GATEWAY_UNREACHABLE`. The checkout also lacks B's signed `pay-bill` CLI. Authenticated steps and live receipt correlation remain pending.
 
 | Stage and owner | Observed blocker and capability needed |
 | --- | --- |
-| Startup and seed (A with B) | The supported launcher is `tools.dev service a --profile real`. `tools.seed` exited 1 as a placeholder. Supply a disposable gateway seed with both browser accounts and a registered BillPal signer. |
-| Startup and readiness (A with B/C) | The real guard refused startup because identity verification, human auth, audit, policy, risk, escalation and the bank client were missing. Wire the real providers so the supported launcher serves `/health/ready` with their real modes. |
-| Mounted routes and signer (A/B/C) | The composition root mounts only health. A must mount the mandate, payment and events routes, B's login and audit routes, and C's escalation router with real ports. Integrate B's SDK path that accepts the browser mandate ID. |
+| Seed (A with B) | The disposable simulated bank seed passes. Verify that the integrated seed supplies both browser accounts and the registered BillPal signing material once B's providers are available. |
+| Startup and readiness (A with B) | The real guard reports missing identity verification, human authentication, and audit. Wire the real providers so `tools.dev service a --profile real` serves `/health/ready` with their real modes. |
+| Signed action (B) | Integrate the signed CLI that accepts the browser-created mandate ID. Verify all required application routes after the gateway reaches readiness. |
 | Receipt after 202 (A/C) | A Customer-authorized stream handler must emit a matching §6.8 `bank.executed` receipt. The frozen Customer list reads pending items only, so a receipt lost beyond replay has no published durable lookup. The IC0 snapshot still lacks human success-body and SSE payload schemas. |
 
 Retry the real smoke with fresh disposable data when a team-approved revision provides the seed and signing inputs, passes real readiness, and mounts the routes for the flow.

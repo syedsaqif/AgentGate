@@ -33,7 +33,7 @@ Open `http://127.0.0.1:5173/customer` or `http://127.0.0.1:5173/ops` using the p
 
 ### Real-stack smoke
 
-Use Python 3.12 and uv 0.13.x in addition to Node.js 24 and npm 11. Run from the **root of a checkout containing the D06 smoke changes**. The command and its Playwright dependency are currently in the local `track-d/D06-real-smoke` worktree at `468237b` plus unstaged changes. The D07 base supplies the UI and mock command.
+Use Python 3.12 and uv 0.13.x in addition to Node.js 24 and npm 11. Run from the repository root. The frontend package includes the D06 smoke command and its Playwright dependency.
 
 ```powershell
 uv sync --frozen
@@ -45,7 +45,7 @@ npm run smoke:real
 
 The smoke starts a disposable loopback stack with the real gateway startup guard enabled. For the integrated seed, supply `D06_OPS_ID`, `D06_OPS_PASSWORD` and `D06_BILLPAL_KEY` (absolute path to the seeded BillPal PEM) in the runner environment. `D06_CUSTOMER_PIN` optionally overrides the disposable seed PIN. The runner sets `VITE_GATEWAY_ORIGIN` to its gateway. For an interactive real UI with a gateway already running, set `$env:VITE_GATEWAY_ORIGIN = 'http://127.0.0.1:8000'` to the actual origin and run `npm run dev:real` from `frontend/`.
 
-The integrated backend at `3a18e74` still lacks the disposable gateway seed, real provider wiring, and B's signed payment command. See `docs/d/README.md` in the local D06 worktree and the [verification log](docs/TEST_RUN.md).
+With backend `daca3fd`, the disposable seed and simulated bank start. Gateway readiness still requires B's real identity, human authentication, and audit providers. The signed payment CLI also remains pending. See the [D06 runbook](docs/d/README.md) and [verification log](docs/TEST_RUN.md).
 
 ## Bootstrap checks
 
