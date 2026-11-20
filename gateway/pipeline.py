@@ -223,7 +223,7 @@ async def process_money_action(
         if not is_new:
             # Replay existing result
             if record.status == ActionStatus.EXECUTED.value:
-                exec_result = await deps.execution_port.execute_stored(canonical_action.request_id)
+                exec_result = await deps.execution_port.execute_stored(record.request_id)
                 return JSONResponse(
                     status_code=200,
                     content=exec_result.model_dump(mode="json"),
@@ -298,12 +298,21 @@ async def process_money_action(
 
     # 6. Risk Engine scoring & attempt recording
     # Section 7.1: Always record & score attempt, even on hard policy DENY
+    history_snap = HistorySnapshot()
+    history_store = getattr(deps.risk_engine, "history_store", None)
+    if history_store is not None and hasattr(history_store, "get_history_snapshot"):
+        history_snap = history_store.get_history_snapshot(
+            customer_id=canonical_action.customer_id,
+            agent_id=canonical_action.agent_id,
+            now=deps.clock.now(),
+        )
+
     risk_input = RiskInput(
         auth=auth_ctx,
         action=canonical_action,
         policy=policy_result,
         mandate=snapshot,
-        history=HistorySnapshot(),
+        history=history_snap,
         now=deps.clock.now(),
         attempt_id=f"att_{canonical_action.request_id}",
     )
@@ -477,21 +486,34 @@ async def process_money_action(
                 status_code=503,
             )
 
-        if deps.unit_of_work is not None:
-            async with deps.unit_of_work as tx:
-                session = tx.session
-                action_store = getattr(deps, "action_reader", None)
-                rec = None
-                if action_store is not None and hasattr(action_store, "get_record"):
-                    rec = await action_store.get_record(session, canonical_action.request_id)
-                    if rec:
-                        rec.status = ActionStatus.PENDING_APPROVAL.value
+        try:
+            if deps.unit_of_work is not None:
+                async with deps.unit_of_work as tx:
+                    session = tx.session
+                    action_store = getattr(deps, "action_reader", None)
+                    rec = None
+                    if action_store is not None and hasattr(action_store, "get_record"):
+                        rec = await action_store.get_record(session, canonical_action.request_id)
+                        if rec:
+                            rec.status = ActionStatus.PENDING_APPROVAL.value
 
-                esc = await deps.escalation_service.create(canonical_action, risk_result, tx)
-                if rec:
-                    rec.escalation_id = esc.escalation_id
-        else:
-            esc = await deps.escalation_service.create(canonical_action, risk_result, None)
+                    esc = await deps.escalation_service.create(canonical_action, risk_result, tx)
+                    if rec:
+                        rec.escalation_id = esc.escalation_id
+            else:
+                esc = await deps.escalation_service.create(canonical_action, risk_result, None)
+        except ValueError as v_err:
+            if ReasonCode.E_ESC_LIMIT_REACHED.value in str(v_err):
+                raise AgentGateError(
+                    code=ReasonCode.E_ESC_LIMIT_REACHED,
+                    message="Pending escalation limit reached for mandate",
+                    status_code=429,
+                ) from v_err
+            raise AgentGateError(
+                code=ReasonCode.E_REQ_INVALID,
+                message=str(v_err),
+                status_code=422,
+            ) from v_err
 
         if deps.event_bus is not None:
             await deps.event_bus.publish(
@@ -559,9 +581,10 @@ async def transfer(request: Request) -> JSONResponse:
     return await process_money_action(request, ActionType.TRANSFER)
 
 
-@router.get("/accounts/{account_id}/balance")
-async def get_balance(account_id: str, request: Request) -> JSONResponse:
+@router.get("/accounts/{id}/balance")
+async def get_balance(id: str, request: Request) -> JSONResponse:
     """Agent read of account balance scoped to active mandate."""
+    account_id = id
     deps: Dependencies = request.app.state.deps
     raw_bytes = await request.body()
     auth = await authenticate_agent(request, raw_bytes, deps)
@@ -712,14 +735,15 @@ async def get_balance(account_id: str, request: Request) -> JSONResponse:
     )
 
 
-@router.get("/accounts/{account_id}/transactions")
+@router.get("/accounts/{id}/transactions")
 async def get_transactions(
-    account_id: str,
+    id: str,
     request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query()] = None,
 ) -> JSONResponse:
     """Agent read of account transaction history scoped to active mandate."""
+    account_id = id
     deps: Dependencies = request.app.state.deps
     raw_bytes = await request.body()
     auth = await authenticate_agent(request, raw_bytes, deps)

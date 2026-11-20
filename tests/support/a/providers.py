@@ -200,10 +200,10 @@ class FakeCatalog(Catalog):
                 verified=False,
             )
 
-    async def get_account(self, account_id: str) -> AccountCard | None:
+    def get_account(self, account_id: str) -> AccountCard | None:
         return self.accounts.get(account_id)
 
-    async def get_payee(self, payee_id: str) -> PayeeCard | None:
+    def get_payee(self, payee_id: str) -> PayeeCard | None:
         return self.payees.get(payee_id)
 
     async def list_accounts_for_customer(self, customer_id: str) -> tuple[AccountCard, ...]:

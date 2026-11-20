@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,9 @@ import yaml
 
 from contracts import CONTRACT_VERSION
 from contracts.canonical import canonical_json, sha256_prefixed
+from gateway.config import AgentGateConfig
+from gateway.deps import build_dependencies
+from gateway.platform.dev import DEFAULT_DEV_KEY
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,6 +113,57 @@ def run_service(owner: str, profile: str, host: str = "127.0.0.1", port: int = 8
         print(f"Service for owner '{owner}' is reserved for that track's roadmap tasks.")
 
 
+def run_stack(
+    profile: str, host: str = "127.0.0.1", port: int = 8000, bank_port: int = 8001
+) -> None:
+    """Start mock bank on loopback and gateway monolith with provider mode reporting."""
+    os.environ["AGENTGATE_PROFILE"] = profile
+    config = AgentGateConfig.load(profile=profile)
+    deps = build_dependencies(config)
+    modes = deps.provider_modes()
+
+    print("=" * 60)
+    print(f"AgentGate Stack Startup — Profile: {profile.upper()}")
+    print("=" * 60)
+    print("Active Provider Modes:")
+    for k, v in modes.items():
+        status_label = "[REAL]" if v == "real" else f"[{v.upper()}]"
+        print(f"  {k:14}: {status_label}")
+    print("-" * 60)
+    print(f"Mock Bank: http://{host}:{bank_port}")
+    print(f"Gateway:   http://{host}:{port}")
+    print("=" * 60)
+
+    try:
+        deps.validate_for_profile()
+    except Exception as exc:
+        print(f"FAIL-CLOSED GUARD: {exc}")
+        if profile == "real":
+            print(
+                "Cannot launch full real stack until all real security providers are implemented."
+            )
+            return
+
+    bank_cmd = [
+        "uv",
+        "run",
+        "uvicorn",
+        "bank_mock.main:app",
+        "--host",
+        host,
+        "--port",
+        str(bank_port),
+        "--log-level",
+        "info",
+    ]
+    bank_proc = subprocess.Popen(bank_cmd)
+    try:
+        uvicorn.run("gateway.main:app", host=host, port=port, log_level="info")
+    finally:
+        bank_proc.terminate()
+        bank_proc.wait()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m tools.dev")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -121,11 +177,36 @@ def main() -> None:
     service.add_argument("--host", default="127.0.0.1")
     service.add_argument("--port", type=int, default=8000)
 
+    reset = subparsers.add_parser("reset")
+    reset.add_argument(
+        "--profile", default="scripted", choices=("test", "scripted", "real")
+    )
+    reset.add_argument("--base-url", default="http://127.0.0.1:8000")
+
+    stack = subparsers.add_parser("stack")
+    stack.add_argument(
+        "--profile", default="real", choices=("test", "scripted", "real")
+    )
+    stack.add_argument("--host", default="127.0.0.1")
+    stack.add_argument("--port", type=int, default=8000)
+    stack.add_argument("--bank-port", type=int, default=8001)
+
     args = parser.parse_args()
     if args.command == "check-contracts":
         check_contracts(args.owner)
     elif args.command == "service":
         run_service(owner=args.owner, profile=args.profile, host=args.host, port=args.port)
+    elif args.command == "reset":
+        from tools.reset import reset_dev
+
+        asyncio.run(reset_dev(args.base_url, DEFAULT_DEV_KEY, args.profile))
+    elif args.command == "stack":
+        run_stack(
+            profile=args.profile,
+            host=args.host,
+            port=args.port,
+            bank_port=args.bank_port,
+        )
 
 
 if __name__ == "__main__":

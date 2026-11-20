@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import uuid
 from typing import Any
@@ -121,7 +122,8 @@ class MandateService(MandateReader, UsageReader):
         # 3. Verify account ownership and payee catalog existence
         for grant in request.grants:
             for acc_id in grant.account_ids:
-                acc = await self.catalog.get_account(acc_id)
+                acc_res = self.catalog.get_account(acc_id)
+                acc = await acc_res if inspect.isawaitable(acc_res) else acc_res
                 if not acc or acc.customer_id != customer_id:
                     raise AgentGateError(
                         code=ReasonCode.E_REQ_INVALID,
@@ -129,7 +131,8 @@ class MandateService(MandateReader, UsageReader):
                         status_code=400,
                     )
             for payee_id in grant.payee_ids:
-                payee = await self.catalog.get_payee(payee_id)
+                payee_res = self.catalog.get_payee(payee_id)
+                payee = await payee_res if inspect.isawaitable(payee_res) else payee_res
                 if not payee:
                     raise AgentGateError(
                         code=ReasonCode.E_REQ_INVALID,
@@ -266,7 +269,7 @@ class MandateService(MandateReader, UsageReader):
                 usage_row = MandateUsageTable(
                     mandate_id=mandate_id,
                     grant_id=grant.grant_id,
-                    window_key=grant.window,
+                    window_key=f"{mandate_id}:{grant.grant_id}:{grant.window}",
                     committed_paise=0,
                     reserved_paise=0,
                     committed_count=0,
