@@ -186,7 +186,10 @@ class PolicyEvaluator:
                 # ISO weekday: Monday=1, Sunday=7
                 if now_kolkata.isoweekday() not in grant.time_window.weekdays:
                     deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-                else:
+                elif not (
+                    grant.time_window.start_local == "00:00"
+                    and grant.time_window.end_local in ("23:59", "23:59:59")
+                ):
                     cur_t = time(now_kolkata.hour, now_kolkata.minute, now_kolkata.second)
                     start_h, start_m = map(int, grant.time_window.start_local.split(":"))
                     end_h, end_m = map(int, grant.time_window.end_local.split(":"))

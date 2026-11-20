@@ -56,15 +56,34 @@ export function readMandateDraft(
   }
 
   const days = weekdays.flatMap((_, index) => fields.getAll("weekday").includes(String(index + 1)) ? [index + 1] : []);
-  const start = String(fields.get("start") ?? "");
-  const end = String(fields.get("end") ?? "");
+  const start = String(fields.get("start") ?? "").trim();
+  const end = String(fields.get("end") ?? "").trim();
   let timeWindow: TimeWindow | undefined;
   if (days.length || start || end) {
     const clock = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-    if (!days.length || !clock.test(start) || !clock.test(end) || start >= end) {
-      return fail("Select weekdays and enter an IST time window that starts and ends on the same day.");
+    let effectiveStart = start;
+    let effectiveEnd = end;
+    if (start && end) {
+      if (!clock.test(start) || !clock.test(end) || start >= end) {
+        return fail("Enter an IST time window where window starts is before window ends on the same day.");
+      }
+    } else if (start && !end) {
+      if (!clock.test(start)) {
+        return fail("Enter a valid IST window start time (HH:MM).");
+      }
+      effectiveEnd = "23:59";
+    } else if (!start && end) {
+      if (!clock.test(end)) {
+        return fail("Enter a valid IST window end time (HH:MM).");
+      }
+      effectiveStart = "00:00";
+    } else {
+      // Both start and end omitted: optional time window covering the entire selected days
+      effectiveStart = "00:00";
+      effectiveEnd = "23:59";
     }
-    timeWindow = { timezone: "Asia/Kolkata", weekdays: days, start_local: start, end_local: end };
+    const effectiveDays = days.length ? days : [1, 2, 3, 4, 5, 6, 7];
+    timeWindow = { timezone: "Asia/Kolkata", weekdays: effectiveDays, start_local: effectiveStart, end_local: effectiveEnd };
   }
 
   const stepUp: MandateTermsInput["step_up"] = {

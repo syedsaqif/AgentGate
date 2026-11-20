@@ -121,6 +121,18 @@ describe("Customer mandate UI against fixtures", () => {
     });
   });
 
+  it("allows optional window starts and ends when weekdays are selected", async () => {
+    const transport = createMockTransport();
+    await signIn(transport);
+    fillDraft();
+    fireEvent.click(screen.getByText("Optional time and approval terms"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Tue" }));
+    // Do NOT fill window starts or window ends (leave optional)
+    click("Review mandate");
+    expect(screen.getByRole("heading", { name: "Review grant terms" })).toBeVisible();
+    expect(screen.getByText("Tue 00:00–23:59 IST")).toBeVisible();
+  });
+
   it("blocks invalid limits before confirmation and sends no create request", async () => {
     const transport = createMockTransport();
     const request = vi.spyOn(transport, "request");
