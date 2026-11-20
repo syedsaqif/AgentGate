@@ -10,7 +10,7 @@ Acceptance follows §11 of the [team distribution](../TEAM_TASK_DISTRIBUTION%20%
 | D04 | Verified the live request, score, registry suspension and reinstatement in Ops. Disconnect, resync and duplicate-event behavior have fixture coverage. |
 | D05 | Verified live chain report and downloaded evidence against the Customer receipt. Provider tests on disposable copies cover four tamper cases. The smoke reports its actual retained checkpoint coverage. |
 | D06 | Verified one fresh ₹4,800 payment using the browser-created mandate and the signed SDK. See the correlation record below. |
-| D07 | Windows startup, separate workspaces, seven-minute script and results content verified or prepared. Independent teammate clean-reset run passed (1/1) on fresh clone at revision `405864e`. Final presentation rehearsal remains. |
+| D07 | Windows startup, separate workspaces, seven-minute script and results content verified or prepared. A teammate verified real readiness and both sign-ins from a fresh clone at `405864e`. Their full ₹4,800 walkthrough remains pending. |
 | D08 | Automated real browser smoke and scenario status verified. Three presenter rehearsals, a physical projector check and a full backup recording remain pending. |
 
 ## Correlation record
@@ -34,25 +34,12 @@ The Python suite passed 247 tests with zero skips. The previous real-stack place
 
 The scripted simulator passed all 18 fixture rows across S1–S11, including 100 simulated S3 races. The general-purpose SDK scenario driver is unavailable. The verified live browser path covers S9a and the corresponding S11 evidence. The metrics tool times synchronous risk scoring and a synthetic SHA-256 chain. End-to-end latency, 1,000 signed entries on the live service, and a full live run of every scenario remain unmeasured.
 
-Earlier D08 fixture walkthroughs inspected 1280×720 and 1920×1080 plus half-width windows. Evidence JSON wraps at 640 pixels; maximize Ops for the audience. Recorded presenter rehearsals 0/3. Independent teammate runs 1/1. Physical projector checks 0. Backup recordings 0.
+Earlier D08 fixture walkthroughs inspected 1280×720 and 1920×1080 plus half-width windows. Evidence JSON wraps at 640 pixels; maximize Ops for the audience. Recorded presenter rehearsals 0/3. Independent teammate walkthroughs 0/1. Physical projector checks 0. Backup recordings 0.
 
 ## D07 clean-reset handoff verification
 
-- **Tested revision:** `405864eaa058af0e4633c87aae4c6c02adc6e1c6`
-- **Location:** Fresh isolated clone at `C:\Users\rpshd\Downloads\AgentGate-D07`
-- **Environment:** Windows 11, Python 3.12.16 (virtualenv), Node.js v26.13.0, npm 11.20.0, Vite 8.3.8
-- **Service Endpoints (Disposable Stack):**
-  - Gateway: `http://127.0.0.1:8010` (real profile, all 8 providers reporting `real`)
-  - Bank Mock: `http://127.0.0.1:8011`
-  - Vite Frontend: `http://127.0.0.1:5174` (connected via `VITE_GATEWAY_ORIGIN`)
-- **Sanitized Readiness Output (`GET /health/ready`):**
-  `{"status":"ready","contract_version":"1.0.0","profile":"real","providers":{"identity":"real","human_auth":"real","audit":"real","risk":"real","escalation":"real","bank":"real","policy":"real","mandates":"real"}}`
-- **User Personas Verified:**
-  - Customer `cust_001` (PIN `4821`): Authenticated, accounts and biller catalog loaded in real mode without mock banner.
-  - Operations `ops_admin` (`ops_secret_pass`): Authenticated, agent registry and audit verifier loaded.
-- **Defects Remediated:**
-  - Mandate creation draft previously enforced mandatory `Window starts` and `Window ends` whenever weekdays were selected. Updated `mandateDraft.ts` and `gateway/mandates/policy.py` so that window start/end times are optional, defaulting to full-day operating hours (`00:00`–`23:59`) or no time restriction when omitted.
-- **Undocumented Steps Recorded:**
-  1. `tools.seed --profile real` requires `D06_OPS_PASSWORD` to be explicitly exported.
-  2. `tools.dev stack --profile real` requires `AGENTGATE_BANK_SERVICE_CREDENTIAL` to be set before startup.
-  3. Frontend dev server in real mode requires `frontend/.env` with `VITE_GATEWAY_ORIGIN` pointing to the gateway port.
+The teammate's handoff in `045235a` records a fresh Windows checkout at `405864eaa058af0e4633c87aae4c6c02adc6e1c6`. Gateway readiness reported contract version 1.0.0 and all eight providers in real mode. The Customer signed in and loaded accounts and billers. Ops signed in and loaded the agent registry and audit verifier.
+
+Their handoff contains readiness and sign-in evidence. The personal ₹4,800 walkthrough remains pending. To count it, record the tested revision, the request ID and the matching audit sequence and hash from the approval, Customer receipt and Ops download. The correlation record above comes from automation.
+
+The documented Windows launcher supplies the disposable seed credentials, bank service credential, SQLite paths and signing keys. The frontend command sets `VITE_GATEWAY_ORIGIN` in PowerShell before starting Vite in real mode.

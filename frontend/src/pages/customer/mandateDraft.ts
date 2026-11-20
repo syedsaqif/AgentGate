@@ -61,26 +61,16 @@ export function readMandateDraft(
   let timeWindow: TimeWindow | undefined;
   if (days.length || start || end) {
     const clock = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-    let effectiveStart = start;
-    let effectiveEnd = end;
-    if (start && end) {
-      if (!clock.test(start) || !clock.test(end) || start >= end) {
-        return fail("Enter an IST time window where window starts is before window ends on the same day.");
-      }
-    } else if (start && !end) {
-      if (!clock.test(start)) {
-        return fail("Enter a valid IST window start time (HH:MM).");
-      }
-      effectiveEnd = "23:59";
-    } else if (!start && end) {
-      if (!clock.test(end)) {
-        return fail("Enter a valid IST window end time (HH:MM).");
-      }
-      effectiveStart = "00:00";
-    } else {
-      // Both start and end omitted: optional time window covering the entire selected days
-      effectiveStart = "00:00";
-      effectiveEnd = "23:59";
+    const effectiveStart = start || "00:00";
+    const effectiveEnd = end || "23:59";
+    if (!clock.test(effectiveStart)) {
+      return fail("Enter a valid IST window start time (HH:MM).");
+    }
+    if (!clock.test(effectiveEnd)) {
+      return fail("Enter a valid IST window end time (HH:MM).");
+    }
+    if (effectiveStart >= effectiveEnd) {
+      return fail("Enter an IST time window whose start is earlier than the end on the same day.");
     }
     const effectiveDays = days.length ? days : [1, 2, 3, 4, 5, 6, 7];
     timeWindow = { timezone: "Asia/Kolkata", weekdays: effectiveDays, start_local: effectiveStart, end_local: effectiveEnd };

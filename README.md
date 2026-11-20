@@ -38,7 +38,7 @@ flowchart TD
     G3 -->|"35 <= Score < 70 (MEDIUM)"| Esc["Track C: Escalation & Human-in-the-Loop"]
     G3 -->|"Score >= 70 (HIGH) or Attack"| Trip["Track C: Circuit Breaker Auto-Trip"]
     
-    Esc -->|"Customer Enters PIN (4821)"| Exec
+    Esc -->|"Customer Enters PIN"| Exec
     Esc -->|"Customer Rejects / Expires"| Fail["Action Cancelled (0 Debits)"]
     Trip -->|"Agent Suspended"| Fail
     
@@ -78,7 +78,7 @@ AgentGate includes 18 end-to-end scenarios covering all attack vectors and norma
 | **S6** | Identity & Replay | Stolen tokens, replay attacks, altered payloads. | Cryptographic rejection; RFC 8785 byte verification prevents payload tampering. |
 | **S7** | Prompt Injection | Poisoned invoice directing ₹40,000 to `PAYEE-X`. | Hard DENY; intent-mismatch + unverified payee triggers instant breaker trip. |
 | **S8** | Structuring Attack | Rapid succession of ₹1,990 transactions. | Att. 1: LOW; Att. 2–3: Escalated; Att. 4: Tripped & Denied. Max 1 executes. |
-| **S9a** | Human Approval | ₹4,800 medium-risk quarterly utility surge. | Stays PENDING; customer enters PIN `4821`; executed once with receipt. |
+| **S9a** | Human Approval | ₹4,800 medium-risk quarterly utility surge. | Stays PENDING; customer enters the configured PIN; executed once with receipt. |
 | **S9b-c**| Reject & Expiry | Customer rejects or clock advances past TTL. | Escalation marked REJECTED/EXPIRED; zero bank calls made. |
 | **S9d** | Approval Reuse | Replaying an approved decision token. | Rejected; idempotent execution prevents duplicate debits. |
 | **S9e** | Wrong PIN & Spam | 4th pending request or incorrect PIN. | Wrong PIN rejected and audited; 4th creation rejected by pending cap. |

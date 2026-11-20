@@ -133,6 +133,48 @@ describe("Customer mandate UI against fixtures", () => {
     expect(screen.getByText("Tue 00:00–23:59 IST")).toBeVisible();
   });
 
+  it.each([
+    ["Window starts (IST)", "23:59"],
+    ["Window ends (IST)", "00:00"],
+  ])("rejects %s of %s when the other bound defaults to the same time", async (label, value) => {
+    const transport = createMockTransport();
+    const request = vi.spyOn(transport, "request");
+    await signIn(transport);
+    fillDraft();
+    fireEvent.click(screen.getByText("Optional time and approval terms"));
+    change(label, value);
+    click("Review mandate");
+    expect(screen.getByRole("alert")).toHaveTextContent("start is earlier than the end");
+    expect(screen.queryByRole("heading", { name: "Review grant terms" })).not.toBeInTheDocument();
+    expect(request.mock.calls.some(([path, init]) => path === mandatePath && init.method === "POST")).toBe(false);
+  });
+
+  it("submits a valid start-only window with the default end and all weekdays", async () => {
+    const transport = createMockTransport();
+    const request = vi.spyOn(transport, "request");
+    await signIn(transport);
+    fillDraft();
+    fireEvent.click(screen.getByText("Optional time and approval terms"));
+    change("Window starts (IST)", "09:00");
+    click("Review mandate");
+    expect(screen.getByRole("heading", { name: "Review grant terms" })).toBeVisible();
+    confirm();
+    expect(await mandateList().findByText("ACTIVE", { exact: false })).toBeVisible();
+    const create = request.mock.calls.find(([path, init]) => path === mandatePath && init.method === "POST");
+    expect(JSON.parse(String(create?.[1].body)).grants[0].time_window).toEqual({
+      timezone: "Asia/Kolkata", weekdays: [1, 2, 3, 4, 5, 6, 7], start_local: "09:00", end_local: "23:59",
+    });
+  });
+
+  it("omits the time window when all window fields are blank", async () => {
+    const transport = createMockTransport();
+    const request = vi.spyOn(transport, "request");
+    await signIn(transport);
+    await createThroughUi();
+    const create = request.mock.calls.find(([path, init]) => path === mandatePath && init.method === "POST");
+    expect(JSON.parse(String(create?.[1].body)).grants[0]).not.toHaveProperty("time_window");
+  });
+
   it("blocks invalid limits before confirmation and sends no create request", async () => {
     const transport = createMockTransport();
     const request = vi.spyOn(transport, "request");

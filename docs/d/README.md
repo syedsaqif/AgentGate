@@ -12,7 +12,7 @@ npm --prefix frontend ci
 powershell -NoProfile -File .\tools\demo.ps1
 ```
 
-Choose a disposable Customer PIN and Ops password at the masked prompts. The launcher creates fresh SQLite databases and Ed25519 keys in a new temporary directory. It prints the SDK key file path. The gateway runs on port 8000 and the simulated bank on port 8001. Keep this terminal open.
+Choose a disposable Customer PIN and Ops password at the masked prompts. The launcher passes the credentials to the real seed, generates a bank service credential, and creates fresh SQLite databases and Ed25519 keys in a new temporary directory. It prints the SDK key file path. The gateway runs on port 8000 and the simulated bank on port 8001. Keep this terminal open.
 
 In the second terminal, start the real Customer and Ops workspaces.
 
@@ -21,6 +21,8 @@ Set-Location frontend
 $env:VITE_GATEWAY_ORIGIN = 'http://127.0.0.1:8000'
 npm run dev:real -- --strictPort
 ```
+
+The PowerShell environment variable supplies the gateway origin for this Vite session.
 
 Open `http://127.0.0.1:5173/customer` and `http://127.0.0.1:5173/ops` in separate browser contexts. Sign in as `cust_001` and `ops_admin` using the values chosen at startup. Create a BillPal bill-payment mandate for ACC-001 and BILL-ELEC with a ₹5,000 transaction cap, ₹10,000 lifetime cap, five uses, future expiry and ₹4,000 approval threshold. Confirm with the Customer PIN.
 

@@ -375,6 +375,17 @@ def test_asia_kolkata_time_window_evaluation() -> None:
     res_sun = evaluator.evaluate(auth, act, snapshot, (), t_sunday)
     assert res_sun.verdict == PolicyVerdict.DENY
 
+    full_day = TimeWindow(
+        timezone="Asia/Kolkata", weekdays=(2,), start_local="00:00", end_local="23:59"
+    )
+    full_day_grant = grant_tw.model_copy(update={"time_window": full_day})
+    snapshot, auth = make_policy_fixture(grants=(full_day_grant,))
+    # 18:29:59 UTC is 23:59:59 IST on Tuesday and Wednesday respectively.
+    tuesday = datetime(2026, 11, 17, 18, 29, 59, tzinfo=UTC)
+    wednesday = datetime(2026, 11, 18, 18, 29, 59, tzinfo=UTC)
+    assert evaluator.evaluate(auth, act, snapshot, (), tuesday).verdict == PolicyVerdict.ALLOW
+    assert evaluator.evaluate(auth, act, snapshot, (), wednesday).verdict == PolicyVerdict.DENY
+
 
 def test_overlapping_grants_intersection_rule() -> None:
     evaluator = PolicyEvaluator()
