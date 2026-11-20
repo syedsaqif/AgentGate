@@ -56,8 +56,11 @@ export async function disposableStack() {
   const children = [];
   async function launch(args, url) {
     let missing = [];
-    const child = spawn(python, ["-m", ...args], { ...options, stdio: ["ignore", "ignore", "pipe"] });
-    children.push(child);
+    const child = spawn(python, ["-m", ...args], {
+      ...options, detached: !windows, stdio: ["ignore", "ignore", "pipe"],
+    });
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    children.push({ child, closed });
     let stopped = false;
     child.once("error", () => { stopped = true; });
     child.once("exit", () => { stopped = true; });
@@ -139,15 +142,18 @@ export async function disposableStack() {
       }
     },
     async close() {
-      for (const child of children.reverse()) {
-        if (!child.pid || child.exitCode !== null || child.signalCode !== null) continue;
-        // Windows venv launchers can have a second Python process.
-        if (windows) await exec("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-        else {
-          const closed = new Promise((resolve) => child.once("close", resolve));
-          child.kill();
-          await closed;
+      for (const { child, closed } of children.reverse()) {
+        if (!child.pid) continue;
+        // Both the bank and its launcher inherit the diagnostic pipe.
+        if (windows) {
+          if (child.exitCode === null && child.signalCode === null) {
+            await exec("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+          }
+        } else {
+          try { process.kill(-child.pid, "SIGTERM"); }
+          catch (error) { if (error.code !== "ESRCH") throw error; }
         }
+        await closed;
       }
       await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
