@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -41,6 +41,11 @@ export async function disposableStack() {
   const reference = `d06-${randomBytes(16).toString("hex")}`;
   const customerPin = String(randomInt(1000, 10000));
   const billpalKey = path.join(runtime, "billpal.pem");
+  const separateWitness = path.join(dir, "witness");
+  await mkdir(separateWitness);
+  const witnessKey = path.join(separateWitness, "witness.pem");
+  const trust = path.join(separateWitness, "trust.json");
+  const checkpoint = path.join(separateWitness, "checkpoint.json");
   const env = { ...process.env, PYTHONPATH: repo, AGENTGATE_PROFILE: "real",
     D06_OPS_ID: opsId, D06_OPS_PASSWORD: opsPassword, D06_CUSTOMER_PIN: customerPin,
     D06_BILLPAL_KEY: billpalKey, D06_REGISTRAR_PASSWORD: randomBytes(24).toString("hex"),
@@ -48,6 +53,7 @@ export async function disposableStack() {
     AGENTGATE_GATEWAY_ORIGIN: gateway, AGENTGATE_BANK_ORIGIN: bank,
     AGENTGATE_GATEWAY_DB: path.join(runtime, "gateway.db"), AGENTGATE_BANK_DB: path.join(runtime, "bank.db"),
     AGENTGATE_BANK_DB_URL: `sqlite+aiosqlite:///${path.join(runtime, "bank.db").split(path.sep).join("/")}`,
+    AGENTGATE_DISPUTE_TRUST_PATH: trust, AGENTGATE_DISPUTE_CHECKPOINT_PATH: checkpoint,
   };
   for (const name of ["MANDATE", "AUDIT", "TOKEN"]) {
     env[`AGENTGATE_${name}_SIGNING_KEY_PATH`] = path.join(runtime, `${name.toLowerCase()}.pem`);
@@ -92,11 +98,36 @@ export async function disposableStack() {
     customerPin,
     reference,
     async seed() {
-      try { await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 }); }
+      try {
+        await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 });
+        const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "inspect-key", "--key",
+          env.AGENTGATE_AUDIT_SIGNING_KEY_PATH], options);
+        const auditPublic = path.join(separateWitness, "audit-public.json");
+        await writeFile(auditPublic, stdout);
+        await exec(python, ["-m", "agent_sdk.cli", "keygen", "--out", witnessKey], options);
+        await exec(python, ["-m", "tools.audit_witness", "register", "--log-id", "disposable-audit",
+          "--audit-public", auditPublic, "--witness-key", witnessKey, "--trust", trust], options);
+      }
       catch (error) {
         throw new SmokeFailure(error.stderr?.includes("intentionally not implemented")
           ? "tools.seed is the IC0 placeholder (exit 1)" : "tools.seed failed");
       }
+    },
+    async witness() {
+      const journal = path.join(separateWitness, "journal.db");
+      const earlier = path.join(separateWitness, "earlier.json");
+      const publish = ["-m", "tools.audit_witness", "checkpoint", "--audit-db", env.AGENTGATE_GATEWAY_DB,
+        "--witness-key", witnessKey, "--trust", trust, "--journal", journal];
+      await exec(python, [...publish, "--output", earlier, "--through-sequence", "1"], options);
+      await exec(python, [...publish, "--output", checkpoint], options);
+      return { dir: separateWitness, earlier: JSON.parse(await readFile(earlier, "utf8")),
+        secret: await readFile(witnessKey), trust: await readFile(trust) };
+    },
+    async verifierTls() {
+      const { stdout } = await exec(python, [path.join(frontend, "tests/real-smoke/tls_fixture.py")], {
+        ...options, timeout: 10000,
+      });
+      return JSON.parse(stdout);
     },
     async bank() {
       const response = await fetch(bank + "/openapi.json", { signal: AbortSignal.timeout(3000), redirect: "error" });

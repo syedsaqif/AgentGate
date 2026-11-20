@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>AgentGate Offline Dispute Verifier v1</title>
+<style>
+  :root { color-scheme: light dark; font: 1rem/1.55 system-ui, sans-serif; }
+  body { max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { line-height: 1.15; }
+  label { display: block; margin-top: 1rem; font-weight: 650; }
+  input { box-sizing: border-box; max-width: 100%; }
+  input[type=text] { width: 100%; padding: .55rem; }
+  input[type=file] { display: block; padding: .3rem 0; }
+  button { margin-top: 1rem; padding: .55rem 1rem; font: inherit; }
+  section { border: 1px solid; padding: 0 1rem; margin-top: 1rem; overflow-wrap: anywhere; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>Offline Dispute Verifier</h1>
+<p>AgentGate proof format and verifier release v1</p>
+<p>Confirm this verifier release and the trust fingerprint with an independent source before opening the files. Verification runs entirely on this device.</p>
+<form id="verify">
+  <label for="proof">Proof package</label>
+  <input id="proof" type="file" accept=".json,application/json" required>
+  <label for="trust">Independent trust manifest</label>
+  <input id="trust" type="file" accept=".json,application/json" required>
+  <label for="fingerprint">Independently confirmed trust SHA-256 fingerprint</label>
+  <input id="fingerprint" type="text" maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off" required>
+  <label for="checkpoint">Newer or separately obtained witness checkpoint (optional)</label>
+  <input id="checkpoint" type="file" accept=".json,application/json">
+  <button>Verify proof</button>
+</form>
+<section id="result" aria-live="polite" hidden>
+  <h2 id="status"></h2>
+  <p id="reason"></p>
+  <p id="receipt"></p>
+</section>
+<script>
+"use strict";
+const FORMAT = "agentgate-dispute-v1";
+const MAX_RECORDS = 10000;
+const GENESIS = "0".repeat(64);
+const ALGORITHM = "Ed25519+SHA-256+RFC8785";
+const encoder = new TextEncoder();
+const byId = id => document.getElementById(id);
+const check = (ok, reason) => { if (!ok) throw new Error(reason); };
+const hasShape = (value, fields) =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+const validHex = value => typeof value === "string" && value.length === 64 && /^[0-9a-f]+$/.test(value);
+const seqNumber = value => Number.isSafeInteger(value) && value >= 1 && value <= MAX_RECORDS;
+const timestamp = value => typeof value === "string"
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value)
+  && Number.isFinite(Date.parse(value));
+
+// RFC 8785 serialization. This protocol admits ASCII fields and safe integer counters and money.
+function canonical(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map(key =>
+      JSON.stringify(key) + ":" + canonical(value[key])).join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+async function readJson(file, maximum) {
+  check(file && file.size > 0 && file.size <= maximum, "Missing file or file size exceeds the v1 limit.");
+  const text = (await file.text()).trim();
+  let value;
+  try { value = JSON.parse(text); }
+  catch { throw new Error("Malformed JSON file."); }
+  // The exporter writes canonical JSON. This also rejects repeated object keys.
+  check(canonical(value) === text, "File must contain canonical JSON with unique fields.");
+  return value;
+}
+
+const hex = buffer => Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, "0")).join("");
+const hexBytes = text => Uint8Array.from(text.match(/../g), pair => parseInt(pair, 16));
+const sha256 = async bytes => hex(await crypto.subtle.digest("SHA-256", bytes));
+const digest = value => sha256(encoder.encode(canonical(value)));
+
+function decodeB64(value, length) {
+  check(typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value),
+    "Malformed base64url key or signature.");
+  const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
+  check(binary.length === length && btoa(binary).replaceAll("+", "-").replaceAll("/", "_")
+    .replace(/=+$/, "") === value, "Malformed base64url key or signature.");
+  return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+async function importPublicKey(jwk) {
+  check(hasShape(jwk, ["kty", "crv", "x"]) && jwk.kty === "OKP" && jwk.crv === "Ed25519",
+    "Unsupported trust key algorithm.");
+  const bytes = decodeB64(jwk.x, 32);
+  let key;
+  try { key = await crypto.subtle.importKey("raw", bytes, "Ed25519", false, ["verify"]); }
+  catch { throw new Error("This browser could not import an Ed25519 WebCrypto key."); }
+  const thumbprint = await crypto.subtle.digest("SHA-256", encoder.encode(canonical(jwk)));
+  const keyId = btoa(String.fromCharCode(...new Uint8Array(thumbprint)))
+    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return { key, keyId };
+}
+
+const signatureValid = (key, sig, bytes) => crypto.subtle.verify("Ed25519", key, decodeB64(sig, 64), bytes);
+
+async function verifySeal(seal, trust, authorized, purpose) {
+  check(hasShape(seal, ["format", "purpose", "log_id", "seq", "entry_hash", "links_hash",
+    "published_at", "key_id", "sig"]), "Malformed " + purpose + ".");
+  check(seal.format === FORMAT && seal.purpose === purpose && seal.log_id === trust.log_id,
+    purpose + " belongs to another log or format.");
+  check(seqNumber(seal.seq) && validHex(seal.entry_hash) && validHex(seal.links_hash)
+    && timestamp(seal.published_at), "Malformed " + purpose + " coverage.");
+  check(seal.key_id === authorized.keyId, "Unknown " + purpose + " signing key.");
+  const { sig, ...data } = seal;
+  check(await signatureValid(authorized.key, sig, encoder.encode(canonical(data))),
+    "Invalid " + purpose + " signature.");
+}
+
+async function verifyDispute(proof, trust, fingerprint, independentCheckpoint) {
+  check(window.isSecureContext && globalThis.crypto?.subtle, "This browser requires HTTPS or a trusted local file.");
+  check(hasShape(trust, ["format", "log_id", "audit_key", "witness_key"])
+    && trust.format === FORMAT && typeof trust.log_id === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(trust.log_id), "Malformed trust manifest.");
+  check(validHex(fingerprint) && await digest(trust) === fingerprint,
+    "Trust manifest fingerprint differs from the independently confirmed value.");
+  const audit = await importPublicKey(trust.audit_key);
+  const witness = await importPublicKey(trust.witness_key);
+  check(audit.keyId !== witness.keyId, "Audit and witness keys must be distinct.");
+
+  check(hasShape(proof, ["format", "algorithm", "log_id", "audit_seal", "witness_checkpoint",
+    "links", "record", "evidence"]), "Malformed proof package.");
+  check(proof.format === FORMAT && proof.algorithm === ALGORITHM, "Unsupported proof format or algorithm.");
+  check(proof.log_id === trust.log_id, "Proof belongs to another log.");
+
+  const { links, record, evidence, audit_seal: auditSeal } = proof;
+  check(Array.isArray(links) && seqNumber(links.length), "Missing audit chain or chain exceeds v1 limits.");
+  await verifySeal(auditSeal, trust, audit, "audit-prefix");
+
+  let prev = GENESIS;
+  for (const [index, link] of links.entries()) {
+    const seq = index + 1;
+    check(hasShape(link, ["seq", "prev_hash", "entry_hash", "sig"]), "Malformed link at sequence " + seq + ".");
+    check(link.seq === seq, "Sequence gap or reordered record at sequence " + seq + ".");
+    check(link.prev_hash === prev && validHex(link.entry_hash), "Previous-hash link mismatch at sequence " + seq + ".");
+    check(await signatureValid(audit.key, link.sig, hexBytes(link.entry_hash)),
+      "Invalid audit record signature at sequence " + seq + ".");
+    prev = link.entry_hash;
+  }
+  check(auditSeal.seq === links.length && auditSeal.entry_hash === prev && auditSeal.links_hash === await digest(links),
+    "The audit seal does not match the complete link list.");
+
+  const privateFields = ["correlation_id", "customer_id", "agent_id", "mandate_id", "mandate_hash", "decision", "risk"];
+  check(hasShape(record, ["seq", "prev_hash", "event_type", "request_id", ...privateFields,
+    "reason_codes", "safe_payload", "occurred_at"]) && record.event_type === "dispute.receipt.v1"
+    && seqNumber(record.seq) && record.seq <= links.length && typeof record.request_id === "string"
+    && /^req_[a-f0-9]{16}$/.test(record.request_id) && timestamp(record.occurred_at)
+    && privateFields.every(field => record[field] === null)
+    && Array.isArray(record.reason_codes) && record.reason_codes.length === 0, "Malformed redacted disclosure.");
+  check(hasShape(evidence, ["action", "currency", "amount_paise", "outcome", "receipt_seq", "receipt_hash"])
+    && ["bill_pay", "transfer"].includes(evidence.action) && evidence.currency === "INR"
+    && Number.isSafeInteger(evidence.amount_paise) && evidence.amount_paise > 0 && evidence.outcome === "EXECUTED"
+    && seqNumber(evidence.receipt_seq) && validHex(evidence.receipt_hash)
+    && canonical(evidence) === canonical(record.safe_payload), "Edited or malformed evidence.");
+  const link = links[record.seq - 1];
+  check(record.prev_hash === link.prev_hash && evidence.receipt_seq === record.seq - 1
+    && evidence.receipt_hash === link.prev_hash, "The disclosure does not link to the Customer receipt.");
+  const serialized = encoder.encode(canonical(record));
+  const bytes = new Uint8Array(32 + serialized.length);
+  bytes.set(hexBytes(link.prev_hash));
+  bytes.set(serialized, 32);
+  check(await sha256(bytes) === link.entry_hash, "The disclosed audit record hash does not match.");
+
+  async function checkWitness(seal) {
+    await verifySeal(seal, trust, witness, "witness-checkpoint");
+    check(seal.seq >= record.seq, "Witness checkpoint predates the disputed disclosure.");
+    check(seal.seq <= links.length, "Proof is incomplete through the witness checkpoint sequence.");
+    check(seal.entry_hash === links[seal.seq - 1].entry_hash
+      && seal.links_hash === await digest(links.slice(0, seal.seq)), "Witness checkpoint conflicts with the audit history.");
+  }
+  const included = proof.witness_checkpoint;
+  if (included !== null) await checkWitness(included);
+  if (independentCheckpoint !== null) await checkWitness(independentCheckpoint);
+  const checkpoint = independentCheckpoint !== null && (included === null || independentCheckpoint.seq >= included.seq)
+    ? independentCheckpoint : included;
+  const paise = String(evidence.amount_paise).padStart(3, "0");
+  const receipt = record.request_id + " · Customer receipt sequence " + evidence.receipt_seq +
+    " · Hash " + evidence.receipt_hash + " · INR " + paise.slice(0, -2) + "." + paise.slice(-2);
+  return {
+    status: checkpoint ? "Verified against external witness" : "Valid chain without external anchoring",
+    reason: checkpoint
+      ? "Log " + trust.log_id + " is covered through sequence " + checkpoint.seq + " as of " + checkpoint.published_at + "."
+      : "The authorized audit key signed this chain. An independent witness checkpoint is unavailable for this proof.",
+    receipt,
+  };
+}
+
+const form = byId("verify");
+form.addEventListener("input", () => { byId("result").hidden = true; });
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = form.querySelector("button");
+  if (button.disabled) return;
+  for (const field of form.elements) field.disabled = true;
+  byId("result").hidden = false;
+  byId("status").textContent = "Verifying…";
+  byId("reason").textContent = "";
+  byId("receipt").textContent = "";
+  try {
+    const proof = await readJson(byId("proof").files[0], 4 * 1024 * 1024);
+    const trust = await readJson(byId("trust").files[0], 4096);
+    const checkpointFile = byId("checkpoint").files[0];
+    const checkpoint = checkpointFile ? await readJson(checkpointFile, 4096) : null;
+    check(!checkpointFile || checkpoint !== null, "Malformed independent witness checkpoint.");
+    const result = await verifyDispute(proof, trust, byId("fingerprint").value.trim().toLowerCase(), checkpoint);
+    byId("status").textContent = result.status;
+    byId("reason").textContent = result.reason;
+    byId("receipt").textContent = result.receipt;
+  } catch (error) {
+    byId("status").textContent = "Verification failed";
+    byId("reason").textContent = error.message;
+  } finally {
+    for (const field of form.elements) field.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

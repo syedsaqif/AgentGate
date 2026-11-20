@@ -323,6 +323,10 @@ def create_app(
         audit_router = build_audit_router(
             audit_log=deps.audit_log,
             human_auth=deps.human_auth,
+            dispute_trust_path=config.dispute_trust_path if profile == "real" else None,
+            dispute_checkpoint_path=(
+                config.dispute_checkpoint_path if profile == "real" else None
+            ),
         )
         app.include_router(audit_router)
 

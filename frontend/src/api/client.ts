@@ -129,6 +129,16 @@ export function createShellApi(transport: ApiTransport) {
     verifyAudit(token: string, signal: AbortSignal) {
       return request({ path: auditVerifyPath, method: "GET" }, authorized(token, signal), isVerifyReport);
     },
+    async disputeProof(token: string, requestId: string, signal: AbortSignal) {
+      if (!/^req_[a-f0-9]{16}$/.test(requestId)) {
+        throw new ApiError("This request has no exportable payment disclosure.", "UI_INVALID_RESPONSE");
+      }
+      const response = await transport.request(`/v1/audit/proof/${encodeURIComponent(requestId)}`, {
+        ...authorized(token, signal), method: "GET", cache: "no-store",
+      });
+      if (!response.ok) throw errorFromResponse(response, await response.json().catch(() => null));
+      return response.text();
+    },
     async auditEvidence(token: string, requestId: string, signal: AbortSignal) {
       if (!requestId || requestId === "." || requestId === "..") {
         throw new ApiError("The evidence request identifier is invalid.", "UI_INVALID_RESPONSE");

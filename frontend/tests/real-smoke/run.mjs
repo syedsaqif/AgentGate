@@ -2,6 +2,7 @@ import { deepStrictEqual } from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { downloadAndCheck, verifierHost } from "./dispute.mjs";
 import { disposableStack, frontend, requireResult, SmokeFailure } from "./stack.mjs";
 
 // This is an explicit integration gate. Never echo browser errors, bodies, headers or secrets.
@@ -69,7 +70,7 @@ async function mandateForm(page, gateway, pin) {
 
 async function run() {
   const stack = await disposableStack();
-  let browser, vite;
+  let browser, vite, verifier;
   try {
     await step("gateway seed", () => stack.seed());
     const sdk = await step("B SDK signed payment command", () => stack.checkSdk());
@@ -90,6 +91,8 @@ async function run() {
       return snapshot;
     }, !!bank);
     process.env.VITE_GATEWAY_ORIGIN = stack.gateway;
+    verifier = await verifierHost(await stack.verifierTls());
+    process.env.VITE_DISPUTE_VERIFIER_URL = verifier.url;
     vite = await createServer({ root: frontend, mode: "real", logLevel: "silent", server: { host: "127.0.0.1", port: 0, open: false } });
     await vite.listen();
     browser = await chromium.launch();
@@ -241,6 +244,12 @@ async function run() {
       "persisted bank operation, debit or balance disagreed with the approved payment");
       console.log(`Bank operation ${publicId(operation.bank_operation_id)}; ledger entry ${publicId(debits[0].entry_id)}; balance ${opening.balance} → ${balance} paise`);
     }, !!(opening && bundle));
+    await step("witness-backed Ops proof verifies offline from QR and local HTML", async () => {
+      const response = await fetch(stack.gateway + "/v1/audit/proof/" + payment.request);
+      requireResult(response.status === 401, "Dispute export must require Ops authentication.");
+      const witness = await stack.witness();
+      await downloadAndCheck({ ops, browser, host: verifier, witness, payment, receipt });
+    }, !!(opening && bundle && receipt));
     await step("Ops suspend and reinstate through refreshed registry state", async () => {
       const agent = ops.getByRole("listitem").filter({ has: ops.getByText("agt_billpal", { exact: true }) });
       for (const [action, label, status] of [
@@ -258,7 +267,9 @@ async function run() {
     }, !!(customer && ops));
   } finally {
     try { await browser?.close(); } finally {
-      try { await vite?.close(); } finally { await stack.close(); }
+      try { await vite?.close(); } finally {
+        try { await verifier?.close(); } finally { await stack.close(); }
+      }
     }
   }
 }

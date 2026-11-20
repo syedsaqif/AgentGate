@@ -63,6 +63,8 @@ class AgentGateConfig(BaseSettings):
     mandate_signing_key_path: str | None = None
     audit_signing_key_path: str | None = None
     token_signing_key_path: str | None = None
+    dispute_trust_path: str | None = None
+    dispute_checkpoint_path: str | None = None
 
     profiles: dict[str, ProfileSettings] = Field(
         default_factory=lambda: {

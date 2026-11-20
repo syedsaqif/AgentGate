@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import secrets
+from asyncio import to_thread
+from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -11,9 +13,11 @@ from contracts.audit_models import EvidenceBundle, VerifyReport
 from contracts.common import ErrorDetail, ErrorEnvelope, HumanRole, Page
 from contracts.identity_ports import HumanAuth
 from contracts.reason_codes import ReasonCode
+from gateway.identity.crypto import canonical_json
 from gateway.identity.errors import AuthenticationError
 
 from .append import AuditWriteError, SqlAuditLog
+from .dispute import PrefixSeal, ProofError, Trust, load_checkpoint
 
 
 def _request_id_for(request: Request) -> str:
@@ -64,6 +68,8 @@ def build_audit_router(
     *,
     audit_log: SqlAuditLog,
     human_auth: HumanAuth,
+    dispute_trust_path: str | None = None,
+    dispute_checkpoint_path: str | None = None,
 ) -> APIRouter:
     """Build Member B's ops-authenticated audit query, verify, and evidence router."""
 
@@ -118,6 +124,42 @@ def build_audit_router(
         token = _extract_bearer_token(authorization)
         await human_auth.authenticate(token, HumanRole.OPS)
         return await audit_log.evidence(request_id)
+
+    @router.get("/v1/audit/proof/{request_id}", include_in_schema=False)
+    async def get_dispute_proof(
+        request_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> Response:
+        await human_auth.authenticate(_extract_bearer_token(authorization), HumanRole.OPS)
+        req_id = _request_id_for(request)
+
+        def load_trust() -> tuple[Trust, PrefixSeal | None]:
+            if dispute_trust_path is None:
+                raise ProofError("Configure the independent dispute trust file before exporting.")
+            trust = Trust.model_validate_json(Path(dispute_trust_path).read_bytes())
+            checkpoint = (
+                load_checkpoint(Path(dispute_checkpoint_path), trust)
+                if dispute_checkpoint_path is not None else None
+            )
+            return trust, checkpoint
+
+        try:
+            trust, checkpoint = await to_thread(load_trust)
+            proof = await audit_log.dispute_proof(request_id, trust, checkpoint)
+            return Response(
+                canonical_json(proof), media_type="application/json",
+                headers={"Cache-Control": "no-store", "X-Request-ID": req_id},
+            )
+        except (OSError, ValueError) as exc:
+            message = str(exc) if isinstance(exc, ProofError) else (
+                "The dispute trust file, checkpoint or audit data could not be validated."
+            )
+            error = ErrorEnvelope(error=ErrorDetail(
+                code=ReasonCode.E_REQ_INVALID.value, message=message, request_id=req_id,
+            ))
+            return JSONResponse(
+                content=error.model_dump(mode="json"), status_code=409,
+                headers={"Cache-Control": "no-store", "X-Request-ID": req_id},
+            )
 
     return router
 

@@ -20,6 +20,7 @@ from contracts.core_models import (
 )
 from contracts.core_ports import BankClient, ExecutionPort, MandateReader
 from contracts.reason_codes import ReasonCode
+from gateway.audit.dispute import payment_disclosure
 from gateway.errors import AgentGateError
 from gateway.executor.actions import ActionStore
 from gateway.executor.idempotency import (
@@ -243,6 +244,9 @@ class ExecutionService(ExecutionPort):
                     occurred_at=self.clock.now(),
                 )
                 final_audit = await self.audit_log.append(exec_event, tx=tx)
+                disclosure = payment_disclosure(exec_event, action, final_audit)
+                if disclosure is not None:
+                    await self.audit_log.append(disclosure, tx=tx)
                 if rec:
                     rec.audit_seq = final_audit.seq
                     rec.audit_hash = final_audit.entry_hash
@@ -368,6 +372,11 @@ class ExecutionService(ExecutionPort):
                         occurred_at=self.clock.now(),
                     )
                     audit_ref = await self.audit_log.append(event, tx=tx)
+                    if target:
+                        action = CanonicalAction.model_validate_json(target.canonical_json)
+                        disclosure = payment_disclosure(event, action, audit_ref)
+                        if disclosure is not None:
+                            await self.audit_log.append(disclosure, tx=tx)
                     if target:
                         target.audit_seq = audit_ref.seq
                         target.audit_hash = audit_ref.entry_hash

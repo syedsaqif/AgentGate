@@ -164,6 +164,8 @@ npm run dev:real -- --strictPort
 
 Open `http://127.0.0.1:5173/customer` and `http://127.0.0.1:5173/ops`. Use the credentials chosen at launch. The complete signed payment example and automated clean-start commands are in the [Windows runbook](docs/d/README.md).
 
+Ops can export a printable QR receipt and verify a dispute offline with an independent witness. See the [offline dispute verifier runbook](docs/DISPUTE_VERIFIER.md).
+
 ## 8. Verification & Test Commands
 
 Run the following checks from the checkout root.

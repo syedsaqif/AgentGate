@@ -34,6 +34,7 @@ from gateway.identity.errors import ValidationDomainError
 from gateway.identity.models import SessionFactory, maybe_await, session_scope
 
 from .checkpoints import CheckpointStore, create_signed_checkpoint
+from .dispute import PrefixSeal, Trust, build_proof
 from .evidence import assemble_evidence_bundle
 from .models import AuditLogRecord
 from .verify import verify_audit_chain
@@ -355,6 +356,15 @@ class SqlAuditLog:
             public_key=self._public_key,
             checkpoint_store=self._checkpoint_store,
             anchor=anchor,
+        )
+
+    async def dispute_proof(
+        self, request_id: str, trust: Trust, checkpoint: PrefixSeal | None
+    ) -> dict[str, Any]:
+        return await build_proof(
+            session_factory=self._session_factory, key=self._signing_key,
+            request_id=request_id, trust=trust, checkpoint=checkpoint,
+            published_at=format_utc_timestamp(self._clock.now()),
         )
 
     async def list_entries(
