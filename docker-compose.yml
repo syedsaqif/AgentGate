@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  agentgate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentgate
+    restart: always
+    ports:
+      - "10000:10000"
+    volumes:
+      - ./runtime:/app/runtime
+    environment:
+      - PORT=10000
+      - AGENTGATE_PROFILE=real
+      - AGENTGATE_BANK_SERVICE_CREDENTIAL=dev-bank-service-credential-2026
+      - AGENTGATE_HUMAN_SESSION_SECRET=dev-human-session-secret-2026
+      - AGENTGATE_DEV_CONTROL_CREDENTIAL=dev-control-credential-2026
