@@ -1,9 +1,10 @@
 import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { randomBytes, randomInt } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,12 +36,24 @@ export async function disposableStack() {
   while (bankPort === gatewayPort) bankPort = await localPort();
   const gateway = `http://127.0.0.1:${gatewayPort}`;
   const bank = `http://127.0.0.1:${bankPort}`;
+  const opsId = "ops_admin";
+  const opsPassword = randomBytes(24).toString("hex");
+  const reference = `d06-${randomBytes(16).toString("hex")}`;
+  const customerPin = String(randomInt(1000, 10000));
+  const billpalKey = path.join(runtime, "billpal.pem");
+  const separateWitness = path.join(dir, "witness");
+  await mkdir(separateWitness);
+  const witnessKey = path.join(separateWitness, "witness.pem");
+  const trust = path.join(separateWitness, "trust.json");
+  const checkpoint = path.join(separateWitness, "checkpoint.json");
   const env = { ...process.env, PYTHONPATH: repo, AGENTGATE_PROFILE: "real",
+    D06_OPS_ID: opsId, D06_OPS_PASSWORD: opsPassword, D06_CUSTOMER_PIN: customerPin,
+    D06_BILLPAL_KEY: billpalKey, D06_REGISTRAR_PASSWORD: randomBytes(24).toString("hex"),
     AGENTGATE_BANK_SERVICE_CREDENTIAL: randomBytes(32).toString("hex"),
-    AGENTGATE_HUMAN_SESSION_SECRET: randomBytes(32).toString("hex"),
     AGENTGATE_GATEWAY_ORIGIN: gateway, AGENTGATE_BANK_ORIGIN: bank,
     AGENTGATE_GATEWAY_DB: path.join(runtime, "gateway.db"), AGENTGATE_BANK_DB: path.join(runtime, "bank.db"),
-    AGENTGATE_BANK_DB_URL: "sqlite+aiosqlite:///runtime/bank.db",
+    AGENTGATE_BANK_DB_URL: `sqlite+aiosqlite:///${path.join(runtime, "bank.db").split(path.sep).join("/")}`,
+    AGENTGATE_DISPUTE_TRUST_PATH: trust, AGENTGATE_DISPUTE_CHECKPOINT_PATH: checkpoint,
   };
   for (const name of ["MANDATE", "AUDIT", "TOKEN"]) {
     env[`AGENTGATE_${name}_SIGNING_KEY_PATH`] = path.join(runtime, `${name.toLowerCase()}.pem`);
@@ -49,8 +62,11 @@ export async function disposableStack() {
   const children = [];
   async function launch(args, url) {
     let missing = [];
-    const child = spawn(python, ["-m", ...args], { ...options, stdio: ["ignore", "ignore", "pipe"] });
-    children.push(child);
+    const child = spawn(python, ["-m", ...args], {
+      ...options, detached: !windows, stdio: ["ignore", "ignore", "pipe"],
+    });
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    children.push({ child, closed });
     let stopped = false;
     child.once("error", () => { stopped = true; });
     child.once("exit", () => { stopped = true; });
@@ -77,46 +93,98 @@ export async function disposableStack() {
   }
   return {
     gateway,
+    opsId,
+    opsPassword,
+    customerPin,
+    reference,
     async seed() {
-      try { await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 }); }
+      try {
+        await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 });
+        const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "inspect-key", "--key",
+          env.AGENTGATE_AUDIT_SIGNING_KEY_PATH], options);
+        const auditPublic = path.join(separateWitness, "audit-public.json");
+        await writeFile(auditPublic, stdout);
+        await exec(python, ["-m", "agent_sdk.cli", "keygen", "--out", witnessKey], options);
+        await exec(python, ["-m", "tools.audit_witness", "register", "--log-id", "disposable-audit",
+          "--audit-public", auditPublic, "--witness-key", witnessKey, "--trust", trust], options);
+      }
       catch (error) {
         throw new SmokeFailure(error.stderr?.includes("intentionally not implemented")
           ? "tools.seed is the IC0 placeholder (exit 1)" : "tools.seed failed");
       }
     },
-    bank: () => launch(["uvicorn", "bank_mock.main:app", "--host", "127.0.0.1", "--port", String(bankPort)], bank + "/openapi.json"),
-    ready: () => launch(["tools.dev", "service", "a", "--profile", "real", "--port", String(gatewayPort)], gateway + "/health/ready"),
+    async witness() {
+      const journal = path.join(separateWitness, "journal.db");
+      const earlier = path.join(separateWitness, "earlier.json");
+      const publish = ["-m", "tools.audit_witness", "checkpoint", "--audit-db", env.AGENTGATE_GATEWAY_DB,
+        "--witness-key", witnessKey, "--trust", trust, "--journal", journal];
+      await exec(python, [...publish, "--output", earlier, "--through-sequence", "1"], options);
+      await exec(python, [...publish, "--output", checkpoint], options);
+      return { dir: separateWitness, earlier: JSON.parse(await readFile(earlier, "utf8")),
+        secret: await readFile(witnessKey), trust: await readFile(trust) };
+    },
+    async verifierTls() {
+      const { stdout } = await exec(python, [path.join(frontend, "tests/real-smoke/tls_fixture.py")], {
+        ...options, timeout: 10000,
+      });
+      return JSON.parse(stdout);
+    },
+    async bank() {
+      const response = await fetch(bank + "/openapi.json", { signal: AbortSignal.timeout(3000), redirect: "error" });
+      requireResult(response.ok, `bank readiness returned HTTP ${response.status}`);
+      return response.json();
+    },
+    ready: () => launch(["tools.dev", "stack", "--profile", "real", "--port", String(gatewayPort),
+      "--bank-port", String(bankPort)], gateway + "/health/ready"),
     async checkSdk() {
       const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--help"], { ...options, timeout: 10000 });
       requireResult(["--key", "--mandate-id", "--amount-paise"].every((flag) => stdout.includes(flag)),
         "checkout does not provide B's signed pay-bill command");
     },
     async pay(mandateId) {
-      const key = process.env.D06_BILLPAL_KEY;
-      requireResult(key && path.isAbsolute(key), "B seed must supply the registered BillPal PEM path in D06_BILLPAL_KEY");
       let stdout;
       try {
         ({ stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--gateway-url", gateway,
-          "--agent-id", "agt_billpal", "--mandate-id", mandateId, "--key", key, "--from-account", "ACC-001",
+          "--agent-id", "agt_billpal", "--mandate-id", mandateId, "--key", billpalKey, "--from-account", "ACC-001",
           "--payee-id", "BILL-ELEC", "--amount-paise", "480000", "--task", "Pay electricity bill",
-          "--category", "utilities", "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
+          "--category", "utilities.electricity", "--reference", reference,
+          "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
         { ...options, timeout: 30000 }));
-      } catch { throw new SmokeFailure("B SDK pay-bill failed; signed action outcome unconfirmed"); }
+      } catch {
+        throw new SmokeFailure("B SDK pay-bill failed; signed action outcome unconfirmed");
+      }
       requireResult(stdout.trim(), "B SDK pay-bill produced no result");
       const result = JSON.parse(stdout);
       requireResult(result.status === "PENDING_APPROVAL" && result.decision === "ESCALATE", "signed payment did not return pending approval");
       return result;
     },
+    bankSnapshot(bankOutcome) {
+      // Inspect the disposable provider database without expanding the browser or bank API.
+      const db = new DatabaseSync(env.AGENTGATE_BANK_DB, { readOnly: true });
+      try {
+        const account = db.prepare("SELECT balance_paise FROM accounts WHERE account_id = ?").get("ACC-001");
+        const debits = db.prepare(`SELECT entry_id, amount_paise, balance_after_paise, reference
+          FROM ledger WHERE account_id = ? AND entry_type = 'DEBIT'`).all("ACC-001");
+        const operation = bankOutcome && db.prepare(`SELECT bank_operation_id, status, amount_paise, balance_paise
+          FROM bank_idempotency_records WHERE bank_idempotency_key = ?`).get(bankOutcome.bank_idempotency_key);
+        return { balance: account?.balance_paise, debits, operation };
+      } finally {
+        db.close();
+      }
+    },
     async close() {
-      for (const child of children.reverse()) {
-        if (!child.pid || child.exitCode !== null || child.signalCode !== null) continue;
-        // Windows venv launchers can have a second Python process.
-        if (windows) await exec("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-        else {
-          const closed = new Promise((resolve) => child.once("close", resolve));
-          child.kill();
-          await closed;
+      for (const { child, closed } of children.reverse()) {
+        if (!child.pid) continue;
+        // Both the bank and its launcher inherit the diagnostic pipe.
+        if (windows) {
+          if (child.exitCode === null && child.signalCode === null) {
+            await exec("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+          }
+        } else {
+          try { process.kill(-child.pid, "SIGTERM"); }
+          catch (error) { if (error.code !== "ESRCH") throw error; }
         }
+        await closed;
       }
       await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },

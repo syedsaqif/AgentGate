@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -153,11 +154,13 @@ class RecordingAuditLog:
         return AuditRef(seq=seq, entry_hash=f"{seq:064x}")
 
     async def verify(self, anchor: AuditRef | None = None) -> VerifyReport:
+        seq = len(self.events)
         return VerifyReport(
             valid=True,
-            checked_count=len(self.events),
-            first_mismatch_seq=None,
-            reason="All entries valid in memory log",
+            entries_checked=seq,
+            head_seq=seq,
+            head_hash="0" * 64,
+            anchored_through_seq=seq,
         )
 
     async def checkpoint(self) -> AuditRef:
@@ -165,13 +168,7 @@ class RecordingAuditLog:
         return AuditRef(seq=seq, entry_hash=f"{seq:064x}")
 
     async def evidence(self, request_id: OpaqueId) -> EvidenceBundle:
-        return EvidenceBundle(
-            request_id=request_id,
-            timestamp=datetime.now(UTC),
-            events=tuple(self.events),
-            checkpoints=(),
-            signer_key_id="key_test",
-        )
+        raise NotImplementedError("evidence not implemented on RecordingAuditLog")
 
 
 # Alias for backward compatibility
@@ -391,9 +388,16 @@ class FixtureLifecycle:
         self.suspended_agents.append((agent_id, reason_codes))
 
     async def suspend_customer_delegation(
-        self, customer_id: OpaqueId, agent_id: OpaqueId, reason_codes: tuple[str, ...]
-    ) -> None:
+        self,
+        customer_id: OpaqueId,
+        agent_id: OpaqueId,
+        reason_codes: tuple[str, ...],
+        *,
+        before_suspend: Callable[[Tx | None], Awaitable[Escalation]] | None = None,
+    ) -> Escalation | None:
+        decided = await before_suspend(None) if before_suspend is not None else None
         self.suspended_delegations.append((customer_id, agent_id, reason_codes))
+        return decided
 
     async def reinstate_agent(self, agent_id: OpaqueId) -> None:
         self.reinstated_agents.append(agent_id)

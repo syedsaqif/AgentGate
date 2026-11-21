@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from contextvars import ContextVar
 from typing import Any
 
-from sqlalchemy import MetaData, event, text
+from sqlalchemy import MetaData, event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,7 +28,7 @@ class Base(DeclarativeBase):
 
 
 def create_db_engine(db_url: str, echo: bool = False) -> AsyncEngine:
-    """Create an AsyncEngine with SQLite WAL, busy_timeout, foreign_keys, and synchronous PRAGMAs."""
+    """Create AsyncEngine with SQLite WAL, busy_timeout, foreign_keys, and synchronous PRAGMAs."""
     engine = create_async_engine(db_url, echo=echo)
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -67,18 +68,32 @@ class SqliteTx(Tx):
 
 
 class SqliteUnitOfWork(UnitOfWork):
-    """Async unit of work managing explicit BEGIN IMMEDIATE transactions."""
+    """Async unit of work managing explicit BEGIN IMMEDIATE transactions with nesting support."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
-        self._session: AsyncSession | None = None
-        self._tx: SqliteTx | None = None
+        self._stack: ContextVar[list[tuple[AsyncSession, Any, SqliteTx]] | None] = ContextVar(
+            f"uow_stack_{id(self)}", default=None
+        )
 
     async def __aenter__(self) -> SqliteTx:
-        self._session = self._session_factory()
-        await self._session.begin()
-        self._tx = SqliteTx(tx_id=f"tx_{uuid.uuid4().hex}", session=self._session)
-        return self._tx
+        stack = list(self._stack.get() or [])
+        if not stack:
+            # Outermost transaction: create new session and begin
+            session = self._session_factory()
+            await session.begin()
+            tx = SqliteTx(tx_id=f"tx_{uuid.uuid4().hex}", session=session)
+            stack.append((session, None, tx))
+            self._stack.set(stack)
+            return tx
+        else:
+            # Nested transaction: create savepoint on active session
+            active_session, _, active_tx = stack[-1]
+            savepoint = await active_session.begin_nested()
+            nested_tx = SqliteTx(tx_id=f"{active_tx.id}_sub{len(stack)}", session=active_session)
+            stack.append((active_session, savepoint, nested_tx))
+            self._stack.set(stack)
+            return nested_tx
 
     async def __aexit__(
         self,
@@ -86,15 +101,27 @@ class SqliteUnitOfWork(UnitOfWork):
         exc: BaseException | None,
         traceback: object | None,
     ) -> bool | None:
-        if self._session is None:
+        stack = list(self._stack.get() or [])
+        if not stack:
             return None
-        try:
+
+        session, savepoint, _ = stack.pop()
+        self._stack.set(stack)
+
+        if savepoint is not None:
+            # Nested savepoint
             if exc_type is not None:
-                await self._session.rollback()
+                await savepoint.rollback()
             else:
-                await self._session.commit()
-        finally:
-            await self._session.close()
-            self._session = None
-            self._tx = None
+                await savepoint.commit()
+        else:
+            # Outermost transaction
+            try:
+                if exc_type is not None:
+                    await session.rollback()
+                else:
+                    await session.commit()
+            finally:
+                await session.close()
+
         return None

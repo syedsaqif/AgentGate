@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from pathlib import Path
+
 import pytest
 
 from simulator.client_port import FixtureScenarioClient
@@ -257,12 +260,239 @@ async def test_scenario_s11_evidence_bundle() -> None:
     assert "bundle_sig" in b
 
 
-@pytest.mark.skip(
-    reason=(
-        "Real SDK / Member A+B gateway stack not yet landed: "
-        "missing real agent_sdk.client and real bank_client"
+@pytest.mark.asyncio
+async def test_real_stack_scenarios_e2e(tmp_path: Path) -> None:
+    """Real-stack scenario execution (S1 and S9) driving real SDK through real gateway."""
+    from httpx import ASGITransport, AsyncClient
+
+    from agent_sdk import AgentGateClient, generate_agent_keypair
+    from bank_mock.main import create_bank_app
+    from bank_mock.schema import BankBase, create_bank_db_engine, create_bank_session_factory
+    from bank_mock.service import seed_bank_data
+    from contracts.common import HumanRole
+    from gateway.audit.schema import create_audit_schema
+    from gateway.executor.bank_client import HttpBankClient
+    from gateway.identity.schema import (
+        create_identity_schema,
+        create_sqlite_identity_engine,
     )
-)
-def test_scenarios_real_stack_placeholder() -> None:
-    """Real-stack scenario execution placeholder pending Member A & B implementations."""
-    pass
+    from gateway.main import create_app
+    from gateway.platform.db import Base, create_db_engine
+    from gateway.platform.startup import init_database
+
+    # 1. Setup real simulated bank
+    bank_db = tmp_path / "bank_scenario.db"
+    bank_engine = create_bank_db_engine(f"sqlite+aiosqlite:///{bank_db.as_posix()}")
+    async with bank_engine.begin() as conn:
+        await conn.run_sync(BankBase.metadata.create_all)
+    b_sf = create_bank_session_factory(bank_engine)
+    async with b_sf() as b_sess:
+        await seed_bank_data(b_sess)
+    await bank_engine.dispose()
+
+    bank_app = create_bank_app(
+        db_url=f"sqlite+aiosqlite:///{bank_db.as_posix()}",
+        service_key="test-key-scenario",
+    )
+    bank_client = HttpBankClient(
+        base_url="http://bank",
+        service_key="test-key-scenario",
+        transport=ASGITransport(app=bank_app),
+    )
+
+    # 2. Setup gateway DB & initialize schema
+    gw_db = tmp_path / "gw_scenario.db"
+    gw_url = f"sqlite+aiosqlite:///{gw_db.as_posix()}"
+    gw_sync_engine = create_sqlite_identity_engine(gw_url)
+    create_identity_schema(gw_sync_engine)
+    create_audit_schema(gw_sync_engine)
+
+    gw_async_engine = create_db_engine(gw_url)
+    await init_database(gw_async_engine, Base.metadata)
+    await gw_async_engine.dispose()
+
+    # 3. Create real app
+    app = create_app(
+        profile="real",
+        overrides={
+            "database": {"gateway_url": gw_url, "bank_url": f"sqlite+aiosqlite:///{bank_db.as_posix()}"},
+            "bank_client": bank_client,
+        },
+    )
+
+    deps = app.state.deps
+    agent_kp = generate_agent_keypair()
+    agent_id = "agt_billpal"
+
+    # Seed synthetic history so 185,000 paise is recognized as low-risk
+    from simulator.history_seed import seed_synthetic_history
+    if hasattr(deps.risk_engine, "history_store") and deps.risk_engine.history_store:
+        seed_synthetic_history(deps.risk_engine.history_store, now=deps.clock.now())
+
+    # Seed Customer, Ops, and Agent in real identity DB
+    await deps.human_auth.seed_customer(
+        customer_id="cust_001",
+        display_name="Demo Customer",
+        pin="4821",
+    )
+    await deps.human_auth.seed_operator(
+        operator_id="ops_admin",
+        display_name="Ops Administrator",
+        role=HumanRole.OPS,
+        password="ops-secret-2026",
+    )
+    await deps.agent_registry.register(
+        agent_id=agent_id,
+        name="BillPal",
+        vendor="Acme Billing",
+        public_jwk=agent_kp.public_jwk(),
+        max_scopes=["bill_pay", "balance_read"],
+    )
+
+    gw_transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=gw_transport, base_url="http://127.0.0.1:8000") as http_client:
+        # 4. Customer logs in and creates mandate
+        login_res = await http_client.post(
+            "/v1/customer/login",
+            json={"customer_id": "cust_001", "pin": "4821"},
+        )
+        assert login_res.status_code == 200
+        customer_token = login_res.json()["session_token"]
+        auth_hdr = {"Authorization": f"Bearer {customer_token}"}
+
+        now = deps.clock.now()
+        mandate_res = await http_client.post(
+            "/v1/customer/mandates",
+            json={
+                "agent_id": agent_id,
+                "valid_from": (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                "valid_until": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "grants": [
+                    {
+                        "grant_id": "grt_bill_01",
+                        "action": "bill_pay",
+                        "account_ids": ["ACC-001"],
+                        "payee_ids": ["BILL-ELEC"],
+                        "max_per_txn_paise": 500000,
+                        "max_total_paise": 2000000,
+                        "max_count": 5,
+                        "category": "utilities.electricity",
+                    }
+                ],
+                "step_up": {"amount_above_paise": 400000},
+                "risk_profile": "balanced",
+                "pin": "4821",
+            },
+            headers=auth_hdr,
+        )
+        assert mandate_res.status_code == 201
+        mandate_id = mandate_res.json()["mandate"]["terms"]["mandate_id"]
+
+        # 5. SDK Client drives S1 (Happy path under ₹4,000 threshold -> executes directly)
+        async with AgentGateClient(
+            gateway_url="http://127.0.0.1:8000",
+            agent_id=agent_id,
+            mandate_id=mandate_id,
+            keypair=agent_kp,
+            transport=gw_transport,
+        ) as sdk_client:
+            s1_res = await sdk_client.pay_bill(
+                from_account="ACC-001",
+                payee_id="BILL-ELEC",
+                amount_paise=185000,
+                task="Pay electricity bill",
+                category="utilities.electricity",
+            )
+            assert s1_res["status"] == "EXECUTED"
+            assert s1_res["audit_ref"]["seq"] >= 1
+
+            # 6. S9a exceeds the ₹4,000 step-up threshold and waits for Customer approval.
+            s9_res = await sdk_client.pay_bill(
+                from_account="ACC-001",
+                payee_id="BILL-ELEC",
+                amount_paise=480000,
+                task="Pay large electricity bill",
+                category="utilities.electricity",
+            )
+            assert s9_res["status"] == "PENDING_APPROVAL"
+            assert s9_res["decision"] == "ESCALATE"
+            escalation_id = s9_res["escalation_id"]
+            request_id = s9_res["request_id"]
+            status = await sdk_client.get_escalation(escalation_id)
+            assert status["request_id"] == request_id
+            assert status["state"] == "PENDING"
+
+        unauthorized = await http_client.get(f"/v1/escalations/{escalation_id}")
+        assert unauthorized.status_code == 401
+
+        # 7. Customer sees escalation in inbox and approves with PIN
+        inbox_res = await http_client.get("/v1/customer/escalations", headers=auth_hdr)
+        assert inbox_res.status_code == 200
+        pending_ids = [item["escalation_id"] for item in inbox_res.json()["items"]]
+        assert escalation_id in pending_ids
+
+        decide_res = await http_client.post(
+            f"/v1/customer/escalations/{escalation_id}/decision",
+            json={"decision": "APPROVE", "pin": "4821"},
+            headers=auth_hdr,
+        )
+        assert decide_res.status_code in (200, 202)
+        dec_body = decide_res.json()
+        assert dec_body["state"] == "EXECUTED"
+        assert dec_body["result"]["status"] == "EXECUTED"
+        assert dec_body["result"]["audit_ref"]["seq"] >= 1
+
+        # 8. Ops logs in and verifies audit chain
+        ops_login = await http_client.post(
+            "/v1/ops/login",
+            json={"operator_id": "ops_admin", "password": "ops-secret-2026"},
+        )
+        assert ops_login.status_code == 200
+        ops_token = ops_login.json()["session_token"]
+        ops_hdr = {"Authorization": f"Bearer {ops_token}"}
+
+        verify_res = await http_client.get("/v1/audit/verify", headers=ops_hdr)
+        assert verify_res.status_code == 200
+        assert verify_res.json()["valid"] is True
+
+        # Check evidence bundle for S9 payment
+        ev_res = await http_client.get(f"/v1/audit/evidence/{request_id}", headers=ops_hdr)
+        assert ev_res.status_code == 200
+        bundle = ev_res.json()
+        assert bundle["request_id"] == request_id
+        assert bundle["bank_outcome"]["status"] == "EXECUTED"
+
+        # A later step-up can be rejected while withdrawing the customer's delegation.
+        async with AgentGateClient(
+            gateway_url="http://127.0.0.1:8000",
+            agent_id=agent_id,
+            mandate_id=mandate_id,
+            keypair=agent_kp,
+            transport=gw_transport,
+        ) as sdk_client:
+            pending = await sdk_client.pay_bill(
+                from_account="ACC-001",
+                payee_id="BILL-ELEC",
+                amount_paise=410000,
+                task="Pay electricity bill",
+                category="utilities.electricity",
+            )
+        assert pending["status"] == "PENDING_APPROVAL"
+        rejected = await http_client.post(
+            f"/v1/customer/escalations/{pending['escalation_id']}/decision",
+            json={"decision": "REJECT", "suspend_agent": True},
+            headers=auth_hdr,
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["state"] == "REJECTED"
+        mandates = await http_client.get("/v1/customer/mandates", headers=auth_hdr)
+        [mandate] = mandates.json()["items"]
+        assert mandate["terms"]["mandate_id"] == mandate_id
+        assert mandate["status"] == "REVOKED"
+        assert mandate["usage"][0]["committed_paise"] == 665000
+        assert mandate["usage"][0]["reserved_paise"] == 0
+        agents = await http_client.get("/v1/ops/agents", headers=ops_hdr)
+        assert agents.json()["items"][0]["status"] == "ACTIVE"
+
+    gw_sync_engine.dispose()

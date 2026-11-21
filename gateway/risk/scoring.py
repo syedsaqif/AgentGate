@@ -43,7 +43,7 @@ def determine_risk_level_and_decision(
 
     if score < low_thresh:
         return RiskLevel.LOW, FinalDecision.ALLOW
-    if score < high_thresh:
+    if score <= high_thresh:
         return RiskLevel.MEDIUM, FinalDecision.ESCALATE
     return RiskLevel.HIGH, FinalDecision.DENY
 

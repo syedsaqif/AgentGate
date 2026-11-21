@@ -9,23 +9,21 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-from contracts.canonical import canonical_json, sha256_prefixed
-from contracts.common import ActionType
-from contracts.core_models import Grant, MandateStatus, StepUpRules, TimeWindow
 from contracts.reason_codes import ReasonCode
 from gateway.main import create_app
 from tests.support.b.providers import MemoryAuditLog
 
 
 @pytest.fixture
-def mandate_test_env(tmp_path: Path):
+async def mandate_test_env(tmp_path: Path):
     db_file = tmp_path / "test_gateway_mandates.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
     app = create_app(
         profile="test",
         overrides={"database": {"gateway_url": db_url, "wal": True}},
     )
-    return app, db_url
+    async with app.router.lifespan_context(app):
+        yield app, db_url
 
 
 def make_valid_mandate_payload(
@@ -80,7 +78,9 @@ async def test_mandate_creation_happy_path(mandate_test_env) -> None:
 
     payload = make_valid_mandate_payload()
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         assert res.status_code == 201
         data = res.json()
@@ -126,7 +126,9 @@ async def test_mandate_creation_pin_failure_rejected(mandate_test_env) -> None:
 
     payload = make_valid_mandate_payload(pin="9999")  # Correct PIN is 4821
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         assert res.status_code == 403
         assert res.json()["error"]["code"] == ReasonCode.E_ESC_BAD_PIN.value
@@ -166,7 +168,9 @@ async def test_mandate_creation_constraint_validations(mandate_test_env) -> None
     transport = ASGITransport(app=app)
     headers = {"Authorization": "Bearer cust_session_001"}
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         # 1. Account belongs to cust_002, not cust_001
         p_wrong_acc = make_valid_mandate_payload(from_account="ACC-002")
         res1 = await client.post("/v1/customer/mandates", json=p_wrong_acc)
@@ -239,6 +243,24 @@ async def test_mandate_cross_customer_isolation(mandate_test_env) -> None:
         # Isolation: zero mandates returned for customer 2
         assert len(list_b.json()["items"]) == 0
 
+    # 3. Verify revoked and expired mandates are still listed for customer 1
+    mnd_id = res_a.json()["mandate"]["terms"]["mandate_id"]
+    async with app.state.session_factory() as s:
+        stmt = text("UPDATE mandates SET status = 'REVOKED' WHERE mandate_id = :mid")
+        await s.execute(stmt, {"mid": mnd_id})
+        await s.commit()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://gateway",
+        headers={"Authorization": "Bearer cust_session_001"},
+    ) as client_a:
+        list_a_revoked = await client_a.get("/v1/customer/mandates")
+        assert list_a_revoked.status_code == 200
+        items = list_a_revoked.json()["items"]
+        assert len(items) == 1
+        assert items[0]["mandate"]["status"] == "REVOKED"
+
 
 @pytest.mark.asyncio
 async def test_mandate_creation_audit_failure_rolls_back(mandate_test_env) -> None:
@@ -251,7 +273,9 @@ async def test_mandate_creation_audit_failure_rolls_back(mandate_test_env) -> No
     app.state.deps.audit_log.fail_append = True
     payload = make_valid_mandate_payload()
 
-    async with AsyncClient(transport=transport, base_url="http://gateway", headers=headers) as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://gateway", headers=headers
+    ) as client:
         res = await client.post("/v1/customer/mandates", json=payload)
         # Audit failure results in 500 / error
         assert res.status_code in (500, 503)

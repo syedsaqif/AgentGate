@@ -5,10 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field
 
 from contracts.common import Currency, OpaqueId, Paise, PositivePaise
-from contracts.core_models import BankResult, BankStatus
 
 
 class BankModel(BaseModel):

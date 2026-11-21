@@ -195,6 +195,9 @@ def print_summary_table(
 
 async def main_async(args: argparse.Namespace) -> int:
     """Async orchestration entry point."""
+    if args.client == "sdk":
+        print("For the real SDK scenario, run npm run smoke:real from frontend/.")
+        return 2
     print("Initializing AgentGate Scenario Runner...")
     print(f"Target profile: {args.profile}")
 
@@ -225,7 +228,7 @@ async def main_async(args: argparse.Namespace) -> int:
         print(f"\n[REPORT] Fake / missing providers detected for profile '{args.profile}':")
         for f in fake_list:
             print(f"  - {f}")
-        print("\nReal SDK scenarios marked as SKIPPED pending Member A & B implementations.")
+        print("\nProvider diagnostics only. The scenario counts above cover fixture runs.")
 
         if args.fail_on_fake:
             print("[FAIL] --fail-on-fake requested. Refusing exit with code 0.")
@@ -263,7 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=str,
         default="fixture",
         choices=["fixture", "sdk"],
-        help="Client type to drive scenarios (default: fixture)",
+        help="Scenario driver (fixture runs here; sdk requires the real smoke or integration test)",
     )
     parser.add_argument(
         "--runs",

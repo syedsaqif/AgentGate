@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Protocol
 
@@ -15,6 +16,7 @@ from .core_models import (
     Reservation,
     UsageSnapshot,
 )
+from .escalation_models import Escalation
 
 
 class MandateReader(Protocol):
@@ -61,8 +63,13 @@ class Lifecycle(Protocol):
     async def suspend_agent(self, agent_id: OpaqueId, reason_codes: tuple[str, ...]) -> None: ...
 
     async def suspend_customer_delegation(
-        self, customer_id: OpaqueId, agent_id: OpaqueId, reason_codes: tuple[str, ...]
-    ) -> None: ...
+        self,
+        customer_id: OpaqueId,
+        agent_id: OpaqueId,
+        reason_codes: tuple[str, ...],
+        *,
+        before_suspend: Callable[[Tx | None], Awaitable[Escalation]] | None = None,
+    ) -> Escalation | None: ...
 
     async def reinstate_agent(self, agent_id: OpaqueId) -> None: ...
 

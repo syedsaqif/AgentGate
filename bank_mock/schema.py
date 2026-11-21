@@ -10,7 +10,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     MetaData,
     String,
@@ -38,7 +37,9 @@ class AccountTable(BankBase):
     customer_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
 
 class PayeeTable(BankBase):
@@ -54,12 +55,16 @@ class LedgerTable(BankBase):
     __tablename__ = "ledger"
 
     entry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    account_id: Mapped[str] = mapped_column(String(64), ForeignKey("accounts.account_id"), nullable=False, index=True)
+    account_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("accounts.account_id"), nullable=False, index=True
+    )
     entry_type: Mapped[str] = mapped_column(String(16), nullable=False)  # "DEBIT" | "CREDIT"
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     balance_after_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     reference: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
 
 
 class BankIdempotencyTable(BankBase):
@@ -73,7 +78,9 @@ class BankIdempotencyTable(BankBase):
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     balance_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    executed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
 
 def create_bank_db_engine(db_url: str, echo: bool = False) -> AsyncEngine:

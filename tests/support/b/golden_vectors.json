@@ -1,0 +1,163 @@
+{
+  "contract_version": "1.0.0",
+  "owner": "B",
+  "secrets_present": false,
+  "description": "B01 golden cryptographic vectors (test-only public material; RFC 8037 Appendix A public key).",
+  "action_vectors": {
+    "frozen_bill_pay": {
+      "projection": {
+        "customer_id": "cust_001",
+        "agent_id": "agt_billpal",
+        "mandate_id": "mnd_demo_1",
+        "mandate_hash": "sha256:demo-mandate-digest",
+        "action_type": "bill_pay",
+        "params": {
+          "from_account": "ACC-001",
+          "payee_id": "BILL-ELEC",
+          "amount_paise": 480000,
+          "currency": "INR",
+          "reference": "NOV-2026"
+        },
+        "intent": {
+          "task": "pay_electricity_bill",
+          "category": "utilities.electricity"
+        },
+        "idempotency_key": "bill-nov-001"
+      },
+      "expected_action_hash": "sha256:9c200f5bab04f06b91e7f2a66cf40a4b4b6e2b8cb6a8677b52d570867d2a81d8"
+    },
+    "reordered_raw_json": "{\"idempotency_key\":\"bill-nov-001\",\"intent\":{\"category\":\"utilities.electricity\",\"task\":\"pay_electricity_bill\"},\"params\":{\"reference\":\"NOV-2026\",\"currency\":\"INR\",\"amount_paise\":480000,\"payee_id\":\"BILL-ELEC\",\"from_account\":\"ACC-001\"},\"action_type\":\"bill_pay\",\"mandate_hash\":\"sha256:demo-mandate-digest\",\"mandate_id\":\"mnd_demo_1\",\"agent_id\":\"agt_billpal\",\"customer_id\":\"cust_001\"}",
+    "altered_amount_plus_one_paise": {
+      "amount_paise": 480001,
+      "expected_action_hash": "sha256:89589a2b7fd1f431d451bc903cd09c42f2ec09a6206bc49d2498a8b2a0db658a"
+    },
+    "altered_task": {
+      "task": "pay_mobile_bill",
+      "expected_action_hash": "sha256:129abee49073472db613af21fff34e0e59c84a01df3dc42e80722d65607f5406"
+    },
+    "unicode_reference_and_note": {
+      "reference": "बिल-नवंबर-2026-₹4800-⚡",
+      "note": "नमस्ते ₹4,800",
+      "expected_action_hash": "sha256:b172a890a530f4ea4e9083ae517bc4416729a19d1dd431cccafccfb034bd7ef0"
+    }
+  },
+  "body_and_fingerprint_vectors": {
+    "empty_body_bsh": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+    "base_body": {
+      "from_account": "ACC-001",
+      "payee_id": "BILL-ELEC",
+      "amount_paise": 480000,
+      "currency": "INR",
+      "reference": "NOV-2026",
+      "intent": {
+        "task": "pay_electricity_bill",
+        "category": "utilities.electricity",
+        "note": "Monthly bill"
+      }
+    },
+    "base_canonical_body_bsh": "eAmOm0JzMt2fPUX9q0IURyj-Xz6ZobS_D7DkWVissnY",
+    "base_request_fingerprint": "sha256:8d820789e6b200859f7ac5442c30bf1876b35b4e0d8a28812b0087989f302077",
+    "note_changed_body": {
+      "from_account": "ACC-001",
+      "payee_id": "BILL-ELEC",
+      "amount_paise": 480000,
+      "currency": "INR",
+      "reference": "NOV-2026",
+      "intent": {
+        "task": "pay_electricity_bill",
+        "category": "utilities.electricity",
+        "note": "Changed note only"
+      }
+    },
+    "note_changed_canonical_body_bsh": "nT9BoW6rBWMvY9erTnVsm_E2--vNR_eOemL0wm3OaDk",
+    "note_changed_request_fingerprint": "sha256:1fb046b5e3479fb970b389d040286931056ef11832708dc6b6192f155eef2022"
+  },
+  "rfc8037_ed25519": {
+    "public_jwk": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    },
+    "expected_jkt": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+    "signing_input_ascii": "eyJhbGciOiJFZERTQSJ9.RXhhbXBsZSBvZiBFZDI1NTE5IHNpZ25pbmc",
+    "expected_sig_b64url": "hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR6dWbhijcNR4ki4iylGjg5BhVsPt9g7sVvpAr_MuM0KAg"
+  },
+  "mandate_vector": {
+    "terms": {
+      "mandate_id": "mnd_demo_1",
+      "version": 1,
+      "customer_id": "cust_001",
+      "agent_id": "agt_billpal",
+      "valid_from": "2026-11-17T04:00:00Z",
+      "valid_until": "2026-12-17T04:00:00Z",
+      "grants": [
+        {
+          "grant_id": "grt_bill_1",
+          "action": "bill_pay",
+          "account_ids": ["ACC-001"],
+          "payee_ids": ["BILL-ELEC"],
+          "currency": "INR",
+          "max_per_txn_paise": 500000,
+          "max_total_paise": 1000000,
+          "max_count": 5,
+          "window": "mandate",
+          "category": "utilities.electricity"
+        }
+      ],
+      "step_up": {
+        "amount_above_paise": 300000,
+        "new_payee_requires_approval": true,
+        "always_ask_actions": []
+      },
+      "risk_profile": "balanced"
+    },
+    "expected_mandate_hash": "sha256:b2e0c1e1af010ca8a68c562aaf10f4e3b9af5d7c67579cdfd4788debef869c7d",
+    "expected_sig_b64url": "F12YOd1MocKsh1Lq1bJw0mjC61hUbyaVipF7El_ZsvvqFzUE8A7uHkW1lTy0nnjogAICnLTP2973oPuQDnsyBg"
+  },
+  "audit_chain_vectors": [
+    {
+      "entry": {
+        "seq": 1,
+        "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "agent.registered",
+        "request_id": "req_vec_0",
+        "correlation_id": null,
+        "customer_id": null,
+        "agent_id": "agt_billpal",
+        "mandate_id": null,
+        "mandate_hash": null,
+        "decision": null,
+        "reason_codes": [],
+        "risk": null,
+        "safe_payload": {
+          "jkt": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+        },
+        "occurred_at": "2026-11-17T04:00:00Z"
+      },
+      "expected_entry_hash": "d5e11b489d0530bf48ddc9d1e3c4a8727fae0944d98b5cd1ac785c4372637918",
+      "expected_sig_b64url": "lqtdvafEa57MpBVwDIDBkO107UE5njkyzJobbQ30-3-9gbt2RSxvpZo5Jj58PrBPEGM7PlIP0sYTb4__Jtu-DA"
+    },
+    {
+      "entry": {
+        "seq": 2,
+        "prev_hash": "d5e11b489d0530bf48ddc9d1e3c4a8727fae0944d98b5cd1ac785c4372637918",
+        "event_type": "policy.decision",
+        "request_id": "req_vec_1",
+        "correlation_id": null,
+        "customer_id": "cust_001",
+        "agent_id": "agt_billpal",
+        "mandate_id": "mnd_demo_1",
+        "mandate_hash": "sha256:b2e0c1e1af010ca8a68c562aaf10f4e3b9af5d7c67579cdfd4788debef869c7d",
+        "decision": "DENY",
+        "reason_codes": ["E_POLICY_PAYEE_NOT_ALLOWED"],
+        "risk": {"score": 42, "level": "MEDIUM"},
+        "safe_payload": {
+          "action_hash": "sha256:9c200f5bab04f06b91e7f2a66cf40a4b4b6e2b8cb6a8677b52d570867d2a81d8"
+        },
+        "occurred_at": "2026-11-17T04:01:00Z"
+      },
+      "expected_entry_hash": "6075c6f53be9e14bab25ab26190ef54fef7ff3abd2aa292e14c30aa5d930677f",
+      "expected_sig_b64url": "lRgCCTB7trTaXvgRjM3r5p4CQk_gVlTc8dwYr_LrWBD1JWhA9BrseiHRwOEyC5E2fGaDObnMBnWiamVwgZMbAA"
+    }
+  ]
+}

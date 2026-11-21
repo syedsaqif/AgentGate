@@ -6,6 +6,7 @@ import { ErrorNotice } from "../../components/ErrorNotice";
 import { formatKolkataTimestamp } from "../../formatting";
 import { AuditVerification, VerificationReport } from "./AuditVerification";
 import { useAuditRead } from "./useAuditRead";
+import { DisputeExport } from "./DisputeExport";
 
 type AuditProps = { api: ShellApi; token: string; endSession: (error: ApiError) => void };
 type Selection = { bundle: EvidenceBundle; json: string };
@@ -121,7 +122,11 @@ export function AuditPanel({ api, token, endSession }: AuditProps) {
           {evidence.state.kind === "loading" && <p role="status">Loading evidence…</p>}
           {evidence.state.kind === "error" && <ErrorNotice error={evidence.state.error} />}
           {evidence.state.kind === "ready" && evidence.state.data.bundle.request_id === selected && (
-            <EvidenceDetails key={selected} evidence={evidence.state.data} />
+            <>
+              <EvidenceDetails key={`evidence-${selected}`} evidence={evidence.state.data} />
+              <DisputeExport key={`dispute-${selected}`} api={api} token={token}
+                endSession={endSession} requestId={selected} />
+            </>
           )}
         </section>
       )}
