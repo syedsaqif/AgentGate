@@ -21,6 +21,9 @@ describe("HomePage", () => {
     const agentLink = screen.getByRole("link", { name: /Payment Assistant/i });
     expect(agentLink).toHaveAttribute("href", "/demo/agent");
 
+    const gateLink = screen.getByRole("link", { name: /Payment Gate/i });
+    expect(gateLink).toHaveAttribute("href", "/demo/gate");
+
     // Ensure customer and operations links are excluded
     expect(screen.queryByRole("link", { name: /^Customer$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^Ops$/i })).not.toBeInTheDocument();

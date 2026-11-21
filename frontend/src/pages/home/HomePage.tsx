@@ -64,6 +64,21 @@ export function HomePage() {
             Open Payment Assistant <span>→</span>
           </div>
         </a>
+
+        <a href="/demo/gate" className="home-card gate">
+          <div className="home-card-top">
+            <div className="home-card-icon" aria-hidden="true">🛡️</div>
+            <span className="home-card-badge">Pipeline Visualizer</span>
+          </div>
+          <h2>Payment Gate</h2>
+          <p>
+            Observe the 10-stage evaluation and safety pipeline: Intake, Identity,
+            Agent DPoP, Request, Mandate, Policy, Risk signals, Breaker, and Bank execution.
+          </p>
+          <div className="home-card-action">
+            Open Payment Gate <span>→</span>
+          </div>
+        </a>
       </div>
 
       <section className="home-guide">

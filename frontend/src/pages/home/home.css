@@ -122,6 +122,11 @@
   color: #8c570f;
 }
 
+.home-card.gate .home-card-icon {
+  background: #f1ecf9;
+  color: #5b21b6;
+}
+
 .home-card-badge {
   font-size: 0.75rem;
   font-weight: 750;
@@ -144,6 +149,11 @@
 .home-card.agent .home-card-badge {
   background: #fedc9c;
   color: #5c3504;
+}
+
+.home-card.gate .home-card-badge {
+  background: #ddd6fe;
+  color: #3b0764;
 }
 
 .home-card h2 {
@@ -179,6 +189,10 @@
 
 .home-card.agent .home-card-action {
   color: #824f0a;
+}
+
+.home-card.gate .home-card-action {
+  color: #6d28d9;
 }
 
 .home-card:hover .home-card-action span {
