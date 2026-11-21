@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager
-COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /bin/uv
 
 # Copy Python dependency specifications and install
 COPY pyproject.toml uv.lock ./
