@@ -24,7 +24,7 @@ from bank_mock.schema import (
 )
 from bank_mock.service import seed_bank_data
 from contracts.common import ActionType, HumanRole
-from gateway.config import AgentGateConfig
+from gateway.config import DEFAULT_AUDIT_KEY_PATH, DEFAULT_DISPUTE_TRUST_PATH, AgentGateConfig
 from gateway.identity.human_auth import HumanSessionKeyring, SqlHumanAuthService
 from gateway.identity.models import AgentRecord, CustomerRecord, OperatorRecord
 from gateway.identity.registry import SqlAgentRegistry
@@ -47,10 +47,11 @@ def _load_or_create_key(path: Path) -> AgentKeyPair:
 
 def _prepare_keys(config: AgentGateConfig) -> AgentKeyPair:
     _load_or_create_key(Path(config.mandate_signing_key_path or "runtime/mandate.pem"))
-    audit_pair = _load_or_create_key(Path(config.audit_signing_key_path or "runtime/audit.pem"))
+    audit_path = Path(config.resolved_audit_signing_key_path or DEFAULT_AUDIT_KEY_PATH)
+    audit_pair = _load_or_create_key(audit_path)
     _load_or_create_key(Path(config.token_signing_key_path or "runtime/token.pem"))
     witness_pair = _load_or_create_key(Path("runtime/witness.pem"))
-    trust_path = Path(config.dispute_trust_path or "runtime/trust.json")
+    trust_path = Path(config.resolved_dispute_trust_path or DEFAULT_DISPUTE_TRUST_PATH)
     if not trust_path.exists():
         from gateway.audit.dispute import Trust
         from gateway.identity.crypto import canonical_json

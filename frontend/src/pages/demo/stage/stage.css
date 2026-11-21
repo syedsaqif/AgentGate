@@ -35,9 +35,6 @@ body:has(.presenter-stage) { background: #101b2a; }
 .stage-gate .gate-request-title { display: flex; gap: 1rem; align-items: baseline; }
 .stage-gate .gate-middle { grid-template-columns: minmax(0,3fr) minmax(8rem,1fr); gap: .55rem; }
 .stage-gate .gate-bottom { grid-template-columns: 1.2fr 1fr; gap: .55rem; }
-.stage-gate .gate-map { min-width: 0; }
-.stage-gate .gate-lanes { gap: .05rem; }
-.stage-gate .gate-lanes strong, .stage-gate .gate-lanes small { font-size: .76rem; }
 .stage-gate .gate-fields dd { overflow-wrap: anywhere; }
 .stage-bank { background: #f4f8f7; display: flex; flex-direction: column; position: relative; }
 .stage-bank .bank-demo { min-height: 0; width: 100%; max-width: none; padding: .9rem; margin: 0; box-sizing: border-box; }
@@ -143,6 +140,5 @@ body:has(.presenter-stage) { background: #101b2a; }
   .stage-panes { display: flex; flex-direction: column; }
   .stage-panes > * { box-sizing: border-box; width: 100%; }
   .stage-gate .gate-middle, .stage-gate .gate-bottom { grid-template-columns: 1fr; }
-  .stage-gate .gate-map { min-width: 31rem; }
 }
 

@@ -104,7 +104,10 @@ export async function disposableStack() {
     reference,
     async seed() {
       try {
-        await exec(python, ["-m", "tools.seed"], { ...options, timeout: 30000 });
+        await exec(python, ["-m", "tools.seed"], {
+          ...options, env: { ...env, AGENTGATE_DISPUTE_TRUST_PATH: path.join(runtime, "trust.json") },
+          timeout: 30000,
+        });
         const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "inspect-key", "--key",
           env.AGENTGATE_AUDIT_SIGNING_KEY_PATH], options);
         const auditPublic = path.join(separateWitness, "audit-public.json");

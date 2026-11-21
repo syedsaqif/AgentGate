@@ -9,6 +9,8 @@ This runbook guides presenters through the live and recorded demonstration of Ag
 ### Automated Launcher (Recommended)
 From the repository root in PowerShell:
 
+Receipt QR codes open the [hosted AgentGate v1 verifier](https://syedsaqif.github.io/AgentGate/v1/dispute-verifier-v1.html). To use a different release, set `AGENTGATE_DISPUTE_VERIFIER_URL` in the launcher terminal and `VITE_DISPUTE_VERIFIER_URL` in the frontend terminal. See [Publish a verifier release](DISPUTE_VERIFIER.md#publish-a-verifier-release).
+
 ```powershell
 # Starts Gateway (port 8000), Bank (port 8001), and Demo Server (port 8002) in one managed stack:
 powershell -ExecutionPolicy Bypass -File tools/demo_stage.ps1

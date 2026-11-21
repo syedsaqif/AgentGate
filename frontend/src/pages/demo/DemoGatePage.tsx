@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { formatInrPaise, formatKolkataTimestamp } from "../../formatting";
 import { explainCheck, explainReason, gateLabel } from "./gateLabels";
+import { GatePacket } from "./GatePacket";
 import { recordings, type RecordingName } from "./gateRecordings";
 import { buildPlayback, pipeline, projectGate, type GateView, type RequestTimeline } from "./gateTimeline";
 import type { RequestEvidence } from "./gateWire";
@@ -114,6 +115,7 @@ function ApprovalBay({ approval, recorded }: { approval: GateView["approval"]; r
   };
   return (
     <div className="gate-approval" data-state={deadlinePassed ? "expired" : state}>
+      <span className="gate-packet-dock" data-packet-lane="approval" aria-hidden="true" />
       {state === "waiting" && !recorded && left !== undefined && left > 0 && (
         <span className="gate-countdown" style={{ "--gate-ttl": ttl ? `${Math.min(100, 100 * left / ttl)}%` : "0%" } as CSSProperties}>
           {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}
@@ -134,49 +136,50 @@ function ApprovalBay({ approval, recorded }: { approval: GateView["approval"]; r
   );
 }
 
-function GatePipeline({ view, recorded }: { view: GateView; recorded: boolean }) {
+function GatePipeline({ view, recorded, packetDuration }: {
+  view: GateView; recorded: boolean; packetDuration: number;
+}) {
   const { active, lanes } = view;
   const checks = view.steps.filter((step) => step.status !== "skip" && step.stage !== "risk");
   const latest = active?.steps.filter((step) => step.status !== "skip").at(-1);
   const policyCheck = view.failed?.stage === "policy" ? view.failed : undefined;
-  const laneIndex = active?.lane === "approval" ? pipeline.length - 1 : pipeline.findIndex(([lane]) => lane === active?.lane);
-  const position = 100 * (laneIndex + 0.5) / pipeline.length;
   const activeTitle = active?.moment === "policy-fail" && policyCheck ? gateLabel(policyCheck.check)
     : active?.moment === "suspension" ? "Circuit breaker tripped"
       : active?.lane === "risk" ? "Risk assessment"
-        : latest && active?.lane !== "approval" ? gateLabel(latest.check) : undefined;
+        : latest && active?.lane !== "approval" && active?.moment !== "bank-result" ? gateLabel(latest.check) : undefined;
   const showCurrent = view.policyFailed || view.suspended || view.failed || activeTitle || !active;
+  const packetLane = active?.lane === "approval" && !view.approval ? undefined : active?.lane;
+  const packetState = packetLane === "approval" && view.approval?.state === "waiting" ? "waiting"
+    : active?.moment === "suspension" ? "suspended"
+      : packetLane && lanes[packetLane] === "failed" ? "failed" : "moving";
   return (
     <section className="gate-panel gate-pipeline" aria-label="Payment pipeline">
-      <h2>Payment pipeline</h2>
-      <div className="gate-map-scroll">
-        <div className="gate-map">
-          <ol className="gate-lanes" aria-label="Gateway stages">
-            {pipeline.map(([lane, label]) => {
-              const status = lanes[lane];
-              const suspended = lane === "breaker" && view.suspended;
-              const executed = lane === "execution" && view.outcome === "executed" && !view.cached;
-              return (
-                <li key={lane} data-active={active?.lane === lane} data-status={suspended ? "suspended" : status ?? "waiting"}>
-                  <span className="gate-door" aria-hidden="true">{status === "failed" ? "×" : status === "reached" ? "✓" : "·"}</span>
-                  <strong>{label}</strong>
-                  <small>{suspended ? "Tripped" : executed ? "Executed" : status ? statusText[status] : "—"}</small>
-                </li>
-              );
-            })}
-          </ol>
-          <ApprovalBay approval={view.approval} recorded={recorded} />
-          <div
-            className="gate-packet"
-            data-visible={!!active}
-            data-parked={active?.lane === "approval" && view.approval?.state === "waiting"}
-            data-suspended={active?.moment === "suspension"}
-            data-failed={active?.moment === "policy-fail" || (!!active && lanes[active.lane] === "failed")}
-            style={{ "--gate-packet-left": `${position}%` } as CSSProperties}
-            aria-hidden="true"
-          ><span key={active?.key} /></div>
-        </div>
+      <div className="gate-pipeline-heading">
+        <h2>Payment pipeline</h2>
+        {view.decisionMs !== undefined && (
+          <span>Real decision · {view.decisionMs < 1 ? "<1" : view.decisionMs} ms</span>
+        )}
       </div>
+      <ol className="gate-lanes" aria-label="Gateway stages" role="list">
+        {pipeline.map(([lane, label]) => {
+          const status = lanes[lane];
+          const suspended = lane === "breaker" && view.suspended;
+          const executed = lane === "execution" && view.outcome === "executed" && !view.cached;
+          const current = active?.lane === lane;
+          const summary = suspended ? "Tripped" : executed ? "Executed" : status && statusText[status];
+          return (
+            <li key={lane} aria-current={current ? "step" : undefined}
+              data-status={suspended ? "suspended" : status ?? "waiting"}>
+              <strong>{label}</strong>
+              {summary && <small>{summary}</small>}
+              <span className="gate-lane-turn" aria-hidden="true" />
+              <span className="gate-packet-dock" data-packet-lane={lane} aria-hidden="true" />
+            </li>
+          );
+        })}
+      </ol>
+      <ApprovalBay approval={view.approval} recorded={recorded} />
+      <GatePacket lane={packetLane} state={packetState} duration={packetDuration} />
       {showCurrent && <div className="gate-current">
         <div aria-live="polite">
           {view.policyFailed && <span className="gate-flag gate-policy-flag">Policy failed</span>}
@@ -188,7 +191,7 @@ function GatePipeline({ view, recorded }: { view: GateView; recorded: boolean })
             {view.failed && <span> {explainCheck(view.failed, view.summary.payee)}</span>}
           </p>
         )}
-        {!active && <p className="gate-muted">The packet appears when a request reaches the gateway.</p>}
+        {!active && <p className="gate-muted">Waiting for a payment request.</p>}
       </div>}
       {!!checks.length && (
         <details className="gate-checks">
@@ -287,7 +290,7 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
       : prior?.moment === "waiting" ? 600
         : prior?.moment ? 350
           : prior?.lane === "risk" ? 400
-            : 160;
+            : 260;
     const timer = window.setTimeout(() => setShown(shown + 1), delay / speed);
     return () => window.clearTimeout(timer);
   }, [controls?.position, beats, reduced, request.steps.length, shown, skipped, speed]);
@@ -295,27 +298,20 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
   return (
     <>
       <RequestCard summary={view.summary} requestId={request.requestId || undefined} />
-      <div className="gate-playback">
-        <div className="gate-playback-label">
-          <strong>Pipeline playback</strong>
-          {view.decisionMs !== undefined && (
-            <span>Real decision · {view.decisionMs < 1 ? "<1" : view.decisionMs} ms</span>
-          )}
+      {!controls && <div className="gate-controls">
+        <div className="gate-speeds" role="group" aria-label="Playback speed">
+          {speeds.map((value) => (
+            <button key={value} type="button" aria-pressed={value === speed} onClick={() => setSpeed(value)}>
+              {value >= 10 ? "Instant" : `${value}×`}
+            </button>
+          ))}
         </div>
-        {!controls && <div className="gate-controls">
-          <div className="gate-speeds" role="group" aria-label="Playback speed">
-            {speeds.map((value) => (
-              <button key={value} type="button" aria-pressed={value === speed} onClick={() => setSpeed(value)}>
-                {value >= 10 ? "Instant" : `${value}×`}
-              </button>
-            ))}
-          </div>
-          <button type="button" onClick={() => { setSkipped(false); setShown(0); }} disabled={!beats.length || reduced}>Replay</button>
-          <button className="gate-skip" type="button" onClick={() => setSkipped(true)} disabled={!beats.length || skipped || reduced}>Skip to result</button>
-        </div>}
-      </div>
+        <button type="button" onClick={() => { setSkipped(false); setShown(0); }} disabled={!beats.length || reduced}>Replay</button>
+        <button className="gate-skip" type="button" onClick={() => setSkipped(true)} disabled={!beats.length || skipped || reduced}>Skip to result</button>
+      </div>}
       <div className="gate-middle" style={{ "--gate-motion": `${Math.max(20, 180 / speed)}ms` } as CSSProperties}>
-        <GatePipeline view={view} recorded={recorded} />
+        <GatePipeline view={view} recorded={recorded}
+          packetDuration={reduced || skipped || speed >= 10 ? 0 : 210 / speed} />
         <RiskPanel risk={view.risk} profile={view.summary.profile} skipped={view.lanes.risk === "skipped"} />
       </div>
       <div className="gate-bottom">

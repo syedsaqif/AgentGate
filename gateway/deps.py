@@ -518,7 +518,7 @@ def build_dependencies(
         from gateway.identity.wiring import build_real_member_b_providers
 
         token_key = _load_or_generate_key(config.token_signing_key_path)
-        audit_key = _load_or_generate_key(config.audit_signing_key_path)
+        audit_key = _load_or_generate_key(config.resolved_audit_signing_key_path)
         mandate_key = _load_or_generate_key(config.mandate_signing_key_path)
         human_keyring = HumanSessionKeyring.generate()
         catalog = TrustedCatalog()

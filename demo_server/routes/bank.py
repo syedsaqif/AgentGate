@@ -26,13 +26,14 @@ from demo_server.session import (
 )
 
 router = APIRouter()
+DEFAULT_VERIFIER_URL = "https://syedsaqif.github.io/AgentGate/v1/dispute-verifier-v1.html"
 
 
 def configured_verifier_url() -> str:
     value = (
         os.getenv("AGENTGATE_DISPUTE_VERIFIER_URL")
         or os.getenv("VITE_DISPUTE_VERIFIER_URL")
-        or "https://verifier.agentgate.dev/dispute-verifier-v1.html"
+        or DEFAULT_VERIFIER_URL
     )
     filename = "/dispute-verifier-v1.html"
     try:

@@ -154,8 +154,6 @@ def run_stack(
     os.environ["AGENTGATE_BANK_ORIGIN"] = f"http://127.0.0.1:{bank_port}"
     os.environ["DEMO_PORT"] = str(demo_port)
     os.environ.setdefault("AGENTGATE_BANK_SERVICE_CREDENTIAL", "dev-bank-service-credential-2026")
-    os.environ.setdefault("AGENTGATE_DISPUTE_TRUST_PATH", str(ROOT / "runtime" / "trust.json"))
-    os.environ.setdefault("AGENTGATE_DISPUTE_VERIFIER_URL", "https://verifier.agentgate.dev/dispute-verifier-v1.html")
     os.environ.setdefault("D06_OPS_ID", "ops_admin")
     os.environ.setdefault("D06_OPS_PASSWORD", "ops-secret-2026")
     os.environ.setdefault("D06_CUSTOMER_PIN", "4821")
