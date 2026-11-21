@@ -60,9 +60,27 @@ class AgentGateConfig(BaseSettings):
     human_session_secret: str | None = None
     dev_control_credential: str | None = None
 
-    mandate_signing_key_path: str | None = None
-    audit_signing_key_path: str | None = None
-    token_signing_key_path: str | None = None
+    mandate_signing_key_path: str | None = Field(
+        default_factory=lambda: (
+            str(ROOT_DIR / "runtime" / "mandate.pem")
+            if (ROOT_DIR / "runtime" / "mandate.pem").exists()
+            else None
+        )
+    )
+    audit_signing_key_path: str | None = Field(
+        default_factory=lambda: (
+            str(ROOT_DIR / "runtime" / "audit.pem")
+            if (ROOT_DIR / "runtime" / "audit.pem").exists()
+            else None
+        )
+    )
+    token_signing_key_path: str | None = Field(
+        default_factory=lambda: (
+            str(ROOT_DIR / "runtime" / "token.pem")
+            if (ROOT_DIR / "runtime" / "token.pem").exists()
+            else None
+        )
+    )
     dispute_trust_path: str | None = Field(
         default_factory=lambda: (
             str(ROOT_DIR / "runtime" / "trust.json")

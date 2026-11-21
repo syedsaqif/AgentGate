@@ -34,17 +34,37 @@ class GatewayClient:
                     self.gateway_origin + path, headers={"Authorization": f"Bearer {token}"},
                 )
             except httpx.HTTPError as error:
-                raise HTTPException(503, detail="Gateway unavailable.") from error
+                raise HTTPException(
+                    503,
+                    detail={
+                        "error": {
+                            "code": "E_SERVICE_UNAVAILABLE",
+                            "message": f"Gateway service unreachable: {error}",
+                        }
+                    },
+                ) from error
         try:
             data = response.json()
         except ValueError:
             data = None
         if not response.is_success:
-            raise HTTPException(
-                response.status_code, detail=data or "Payment evidence unavailable."
-            )
+            err_detail = data if isinstance(data, dict) else {
+                "error": {
+                    "code": "E_REQ_INVALID" if response.status_code == 400 else "E_SERVICE_UNAVAILABLE",
+                    "message": f"Gateway returned {response.status_code}: {data or 'Payment evidence unavailable.'}",
+                }
+            }
+            raise HTTPException(response.status_code, detail=err_detail)
         if not isinstance(data, dict):
-            raise HTTPException(502, detail="Gateway returned invalid payment evidence.")
+            raise HTTPException(
+                502,
+                detail={
+                    "error": {
+                        "code": "UI_INVALID_RESPONSE",
+                        "message": "Gateway returned invalid payment evidence.",
+                    }
+                },
+            )
         return data
 
     async def customer_login(self, customer_id: str, pin: str) -> dict[str, Any]:

@@ -99,7 +99,7 @@ async def demo_receipt_qr(
     not_found = HTTPException(404, detail={
         "code": "E_REQ_INVALID", "message": "Payment receipt not found.",
     })
-    if not re.fullmatch(r"req_[a-f0-9]{16}", request_id):
+    if not re.fullmatch(r"req_[a-zA-Z0-9_-]{4,64}", request_id):
         raise not_found
     try:
         action = await gateway.read_payment_evidence(
