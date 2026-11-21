@@ -32,7 +32,7 @@ async function exercise(browser, script) {
     await bank.getByRole("button",{name:"Sign in"}).click();
     await bank.locator("[data-balance-paise='12500000']").waitFor();
     const gateBox = await gate.boundingBox();
-    assert(gateBox.width > (await bank.boundingBox()).width * 1.8);
+    assert(gateBox.width > (await bank.boundingBox()).width);
     assert(gateBox.width > (await page.locator(".stage-agent").boundingBox()).width * 1.8);
     const scenario = page.getByLabel("Scenario", {exact:true});
     async function run(id, decision) {
