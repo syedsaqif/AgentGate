@@ -1,10 +1,12 @@
 body:has(.presenter-stage) { background: #101b2a; }
 .presenter-stage { color: #edf4fc; font: 1rem/1.45 "Inter", system-ui, sans-serif; }
-.stage-bar { position: sticky; top: 0; z-index: 4; padding: .8rem 1.2rem; display: flex; align-items: center; flex-wrap: wrap; gap: .55rem 1rem; border-bottom: 1px solid #536478; background: #101b2a; }
+.stage-bar { position: sticky; top: 0; z-index: 4; padding: .8rem 1.2rem; display: flex; align-items: flex-end; flex-wrap: wrap; gap: .55rem 1rem; border-bottom: 1px solid #536478; background: #101b2a; }
+.stage-brand, .stage-badge { align-self: center; }
 .stage-brand span, .stage-agent header p { color: #98cde4; font-weight: 650; margin: 0; }
 .stage-brand h1 { font-size: 1.28rem; margin: 0; color: inherit; }
 .stage-bar label { display: grid; font-size: .84rem; color: #c1d2dc; }
 .stage-bar button, .stage-bar select, .stage-help button { color: #f0f6ff; background: #213147; font: inherit; border: 1px solid #61758b; border-radius: .4rem; padding: .44rem .65rem; }
+.stage-bar button, .stage-bar select { box-sizing: border-box; min-height: 2.5rem; }
 .stage-bar button:disabled { opacity: .55; }
 .stage-bar .stage-run { background: #a2ebce; color: #0a332b; font-weight: 700; }
 .stage-picker select { max-width: min(20rem, 80vw); }
@@ -136,7 +138,6 @@ body:has(.presenter-stage) { background: #101b2a; }
   .stage-gate { order: -1; grid-column: 1/-1; }
   .stage-agent, .stage-gate, .stage-bank { max-height: none; }
   .stage-bar { position: static; }
-  .stage-badge { position: fixed; right: .6rem; top: .6rem; z-index: 6; }
 }
 @media(max-width: 630px) {
   .stage-panes { display: flex; flex-direction: column; }
