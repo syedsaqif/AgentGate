@@ -448,13 +448,14 @@ def build_dependencies(
     from gateway.platform.lifecycle import LifecycleCoordinator
     from gateway.risk.history import RiskHistoryStore
     from gateway.risk.scoring import DeterministicRiskEngine
-    from tests.support.platform import FrozenClock
 
-    clock = (
-        FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
-        if config.active_profile_settings.frozen_clock
-        else SystemClock()
-    )
+    clock: Clock
+    if config.active_profile_settings.frozen_clock:
+        from tests.support.platform import FrozenClock
+
+        clock = FrozenClock(datetime(2026, 11, 17, 10, 0, 0, tzinfo=UTC))
+    else:
+        clock = SystemClock()
 
     history_store = RiskHistoryStore()
     if config.profile in ("real", "scripted"):
