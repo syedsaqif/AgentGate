@@ -9,6 +9,10 @@ echo "================================================="
 # Substitute $PORT into nginx configuration
 envsubst '$PORT' < /app/nginx.conf.template > /etc/nginx/nginx.conf
 
+# Seed cryptographic keys, trust bundle, and database if not already present
+echo "Seeding runtime cryptographic keys and databases..."
+uv run python -m tools.seed --profile real
+
 # Start backend services stack in background
 uv run python -m tools.dev stack --profile real &
 

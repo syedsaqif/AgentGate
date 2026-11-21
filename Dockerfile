@@ -34,7 +34,9 @@ COPY demo_server/ ./demo_server/
 COPY agent_sdk/ ./agent_sdk/
 COPY simulator/ ./simulator/
 COPY tools/ ./tools/
-COPY runtime/ ./runtime/
+
+# Create runtime directory for dynamic databases and cryptographic keys
+RUN mkdir -p /app/runtime
 
 # Copy built frontend distribution from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
