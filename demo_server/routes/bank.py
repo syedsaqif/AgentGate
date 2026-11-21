@@ -30,7 +30,9 @@ router = APIRouter()
 
 def configured_verifier_url() -> str:
     value = (
-        os.getenv("AGENTGATE_DISPUTE_VERIFIER_URL") or os.getenv("VITE_DISPUTE_VERIFIER_URL", "")
+        os.getenv("AGENTGATE_DISPUTE_VERIFIER_URL")
+        or os.getenv("VITE_DISPUTE_VERIFIER_URL")
+        or "https://verifier.agentgate.dev/dispute-verifier-v1.html"
     )
     filename = "/dispute-verifier-v1.html"
     try:

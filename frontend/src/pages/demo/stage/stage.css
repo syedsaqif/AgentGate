@@ -13,10 +13,10 @@ body:has(.presenter-stage) { background: #101b2a; }
 .stage-badge { margin-left: auto; padding: .25rem .65rem; border-radius: 1rem; font-weight: 750; color: #182639; background: #ffdb91; }
 .stage-badge[data-mode=live] { background: #9dedcf; }
 .stage-help { padding: .45rem 1.2rem; display: flex; gap: 1rem; flex-wrap: wrap; color: #cad5e0; font-size: .89rem; }
-.stage-panes { display: grid; grid-template-columns: minmax(12rem,.83fr) minmax(0,2.95fr) minmax(16rem,1.12fr); gap: .75rem; padding: .5rem .8rem 1rem; align-items: start; }
-.stage-panes > * { min-width: 0; border-radius: .65rem; }
-.stage-agent, .stage-gate, .stage-bank { overflow: auto; max-height: calc(100dvh - 8.7rem); scrollbar-width: thin; }
-.stage-agent { background: #edf3f7; color: #182c3e; padding: 1rem; overflow-wrap: anywhere; }
+.stage-panes { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(0, 1.85fr) minmax(19rem, 1.25fr); gap: .85rem; padding: .5rem .9rem 1rem; align-items: stretch; }
+.stage-panes > * { min-width: 0; border-radius: .65rem; box-sizing: border-box; }
+.stage-agent, .stage-gate, .stage-bank { overflow: auto; max-height: calc(100dvh - 7.6rem); scrollbar-width: thin; }
+.stage-agent { background: #edf3f7; color: #182c3e; padding: 1rem; overflow-wrap: anywhere; display: flex; flex-direction: column; }
 .stage-agent header p { color: #366476; }
 .stage-agent h2 { margin: 0; font-size: 1.28rem; }
 .stage-prompt { border-left: .25rem solid #448284; padding: .65rem; background: #fff; font-weight: 590; }
@@ -37,8 +37,9 @@ body:has(.presenter-stage) { background: #101b2a; }
 .stage-gate .gate-lanes { gap: .05rem; }
 .stage-gate .gate-lanes strong, .stage-gate .gate-lanes small { font-size: .76rem; }
 .stage-gate .gate-fields dd { overflow-wrap: anywhere; }
-.stage-bank { background: #f4f8f7; }
-.stage-bank .bank-demo { min-height: 0; width: 100%; max-width: none; padding: .9rem; margin: 0; }
+.stage-bank { background: #f4f8f7; display: flex; flex-direction: column; position: relative; }
+.stage-bank .bank-demo { min-height: 0; width: 100%; max-width: none; padding: .9rem; margin: 0; box-sizing: border-box; }
+.stage-bank .bank-header { position: sticky; top: 0; background: #f4f8f7; z-index: 3; padding: 0.15rem 0 0.5rem; margin-bottom: 0.5rem; }
 .stage-bank .bank-form input { min-width: 0; }
 .stage-compare-dialog {
   position: fixed;

@@ -11,7 +11,7 @@ import "../agent/demoAgent.css";
 import "./stage.css";
 
 type Mode = "live" | "recorded";
-type Speed = 0.5 | 1 | 2;
+type Speed = 0.5 | 1 | 2 | 4 | 10;
 type Run = { key: string; id: string };
 const initial = () => new URLSearchParams(window.location.search);
 const aliases = (card: Scenario) => (card as Capture["card"]).aliases ?? [];
@@ -160,7 +160,7 @@ export default function PresenterStage() {
   useEffect(() => () => action.current?.abort(), []);
   useEffect(() => {
     if (!recorded || !frame || position === frames.length - 1) return;
-    if (skip || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    if (skip || speed >= 10 || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
       setRecordIndex(frames.length - 1); return;
     }
     const timer = window.setTimeout(() => setRecordIndex(position + 1), frame.delay / speed);
@@ -227,8 +227,13 @@ export default function PresenterStage() {
       </select></label>
       <button className="stage-run" disabled={!selectedCard || busy || waiting} onClick={() => void play()}>
         {selectedCard && isFixture(selectedCard) ? "Show fixture" : recorded ? "Play recording" : "Run scenario"}</button>
-      <label>Slow motion<select aria-label="Playback speed" value={speed} onChange={event => setSpeed(Number(event.target.value) as Speed)}>
-        {[0.5,1,2].map(s => <option value={s} key={s}>{s}×</option>)}</select></label>
+      <label>Speed<select aria-label="Playback speed" value={speed} onChange={event => setSpeed(Number(event.target.value) as Speed)}>
+        <option value={0.5}>0.5×</option>
+        <option value={1}>1×</option>
+        <option value={2}>2×</option>
+        <option value={4}>4×</option>
+        <option value={10}>Instant</option>
+      </select></label>
       <button onClick={() => setSkip(true)} disabled={skip || (!request && !record)}>Skip to result</button>
       <button onClick={() => void reset()} disabled={busy || waiting}>{recorded || fixture ? "Clear playback" : "Soft reset"}</button>
       {recorded && (

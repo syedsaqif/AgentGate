@@ -47,8 +47,20 @@ def _load_or_create_key(path: Path) -> AgentKeyPair:
 
 def _prepare_keys(config: AgentGateConfig) -> AgentKeyPair:
     _load_or_create_key(Path(config.mandate_signing_key_path or "runtime/mandate.pem"))
-    _load_or_create_key(Path(config.audit_signing_key_path or "runtime/audit.pem"))
+    audit_pair = _load_or_create_key(Path(config.audit_signing_key_path or "runtime/audit.pem"))
     _load_or_create_key(Path(config.token_signing_key_path or "runtime/token.pem"))
+    witness_pair = _load_or_create_key(Path("runtime/witness.pem"))
+    trust_path = Path(config.dispute_trust_path or "runtime/trust.json")
+    if not trust_path.exists():
+        from gateway.audit.dispute import Trust
+        from gateway.identity.crypto import canonical_json
+        trust = Trust.model_validate({
+            "log_id": "disposable-audit",
+            "audit_key": public_key_to_jwk(audit_pair.public_key),
+            "witness_key": public_key_to_jwk(witness_pair.public_key),
+        })
+        trust.validate_keys()
+        trust_path.write_bytes(canonical_json(trust.model_dump()))
     return _load_or_create_key(Path(os.getenv("D06_BILLPAL_KEY") or "runtime/billpal.pem"))
 
 
@@ -56,7 +68,7 @@ async def seed_data(profile: str) -> None:
     config = AgentGateConfig.load(profile=profile)
     customer_pin = os.getenv("D06_CUSTOMER_PIN", "4821")
     ops_id = os.getenv("D06_OPS_ID", "ops_admin")
-    ops_password = os.getenv("D06_OPS_PASSWORD")
+    ops_password = os.getenv("D06_OPS_PASSWORD", "ops-secret-2026")
     if profile == "real" and not ops_password:
         raise SystemExit("Set D06_OPS_PASSWORD for the disposable real-profile seed.")
     pair = await asyncio.to_thread(_prepare_keys, config)

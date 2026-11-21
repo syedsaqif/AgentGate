@@ -7,7 +7,7 @@ import type { RequestEvidence } from "./gateWire";
 import { useGateStream } from "./useGateStream";
 import "./demoGate.css";
 
-const speeds = [0.5, 1, 2] as const;
+const speeds = [0.5, 1, 2, 4, 10] as const;
 type Speed = (typeof speeds)[number];
 const bandMarks = { balanced: [35, 70], conservative: [25, 60], permissive: [45, 80] };
 const statusText = { reached: "Checked", failed: "Failed", skipped: "Not reached" };
@@ -278,12 +278,16 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
 
   useEffect(() => {
     if (controls?.position !== undefined || reduced || skipped || shown >= beats.length) return;
+    if (speed >= 10) {
+      setShown(beats.length);
+      return;
+    }
     const prior = beats[shown - 1];
-    const delay = shown === 0 ? (request.steps.length ? 100 : 450)
-      : prior?.moment === "waiting" ? 1_450
-        : prior?.moment ? 700
-          : prior?.lane === "risk" ? 850
-            : 330;
+    const delay = shown === 0 ? (request.steps.length ? 60 : 200)
+      : prior?.moment === "waiting" ? 600
+        : prior?.moment ? 350
+          : prior?.lane === "risk" ? 400
+            : 160;
     const timer = window.setTimeout(() => setShown(shown + 1), delay / speed);
     return () => window.clearTimeout(timer);
   }, [controls?.position, beats, reduced, request.steps.length, shown, skipped, speed]);
@@ -293,7 +297,7 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
       <RequestCard summary={view.summary} requestId={request.requestId || undefined} />
       <div className="gate-playback">
         <div className="gate-playback-label">
-          <strong>Slow-motion playback</strong>
+          <strong>Pipeline playback</strong>
           {view.decisionMs !== undefined && (
             <span>Real decision · {view.decisionMs < 1 ? "<1" : view.decisionMs} ms</span>
           )}
@@ -302,7 +306,7 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
           <div className="gate-speeds" role="group" aria-label="Playback speed">
             {speeds.map((value) => (
               <button key={value} type="button" aria-pressed={value === speed} onClick={() => setSpeed(value)}>
-                {value}×
+                {value >= 10 ? "Instant" : `${value}×`}
               </button>
             ))}
           </div>
@@ -310,7 +314,7 @@ export function Playback({ request = emptyRequest, evidence, recorded, controls 
           <button className="gate-skip" type="button" onClick={() => setSkipped(true)} disabled={!beats.length || skipped || reduced}>Skip to result</button>
         </div>}
       </div>
-      <div className="gate-middle" style={{ "--gate-motion": `${230 / speed}ms` } as CSSProperties}>
+      <div className="gate-middle" style={{ "--gate-motion": `${Math.max(20, 180 / speed)}ms` } as CSSProperties}>
         <GatePipeline view={view} recorded={recorded} />
         <RiskPanel risk={view.risk} profile={view.summary.profile} skipped={view.lanes.risk === "skipped"} />
       </div>

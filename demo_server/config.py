@@ -39,12 +39,12 @@ class DemoServerConfig:
     def from_env(cls) -> DemoServerConfig:
         gw_origin = os.getenv("AGENTGATE_GATEWAY_ORIGIN", "http://127.0.0.1:8000")
         bank_origin = os.getenv("AGENTGATE_BANK_ORIGIN", "http://127.0.0.1:8001")
-        bank_key = os.getenv("AGENTGATE_BANK_SERVICE_CREDENTIAL", "local-bank-dev-secret")
+        bank_key = os.getenv("AGENTGATE_BANK_SERVICE_CREDENTIAL", "dev-bank-service-credential-2026")
         ops_id = os.getenv("D06_OPS_ID", "ops_admin")
-        ops_pw = os.getenv("D06_OPS_PASSWORD")
-        cust_pin = os.getenv("D06_CUSTOMER_PIN")
-        key_path_env = os.getenv("D06_BILLPAL_KEY")
-        billpal_key = Path(key_path_env) if key_path_env else None
+        ops_pw = os.getenv("D06_OPS_PASSWORD", "ops-secret-2026")
+        cust_pin = os.getenv("D06_CUSTOMER_PIN", "4821")
+        key_path_env = os.getenv("D06_BILLPAL_KEY", "runtime/billpal.pem")
+        billpal_key = Path(key_path_env) if key_path_env and Path(key_path_env).exists() else None
 
         custom_origins = os.getenv("DEMO_FRONTEND_ORIGINS")
         origins = [
