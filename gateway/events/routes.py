@@ -81,7 +81,7 @@ async def _sse_stream_generator(
         return
 
     # 2. Subscribe to live events
-    queue = bus.subscribe()
+    queue = bus.subscribe(include_trace=role == HumanRole.OPS)
     try:
         while True:
             if request is not None and await request.is_disconnected():

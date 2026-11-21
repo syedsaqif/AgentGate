@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from contracts.common import HumanRole
@@ -19,10 +20,19 @@ def format_event_frame(
     Enforces customer isolation and redacts internal ops diagnostics when streamed
     to a customer session.
     """
+    if item.event_type == "gate.step" and role != HumanRole.OPS:
+        return None
+
     # Strict customer isolation: customer only receives their own events
     if role == HumanRole.CUSTOMER:
+        if item.event_type == "agent.suspended" and customer_id in item.customer_audience:
+            # Scope the existing committed notification without disclosing other owners.
+            item = replace(item, data={"customer_id": customer_id, "agent_id": item.agent_id,
+                                       "status": "SUSPENDED"})
         item_customer = item.customer_id
         if item_customer is None or item_customer != customer_id:
+            return None
+        if item.event_type == "policy.decision":
             return None
 
     # Construct the JSON envelope per Section 6.8

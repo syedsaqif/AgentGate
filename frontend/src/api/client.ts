@@ -13,7 +13,7 @@ import {
   decodeOpsEvent, opsStreamPath, reinstateAgentPath, suspendAgentPath,
   type AgentCursor, type AgentMutation, type OpsEvent, type ReinstateAgentParams, type SuspendAgentParams,
 } from "./opsWire";
-import { readSse } from "./sse";
+import { readSse, type SseFrame } from "./sse";
 import {
   isCustomerBootstrap,
   isHumanSession,
@@ -73,6 +73,29 @@ export function createShellApi(transport: ApiTransport) {
     signal,
   });
 
+  async function stream(path: "/v1/customer/stream" | typeof opsStreamPath, token: string,
+    lastEventId: string | undefined, signal: AbortSignal, opened: () => void, event: (frame: SseFrame) => void) {
+    const auth = authorized(token, signal);
+    const headers = new Headers({ ...auth.headers, Accept: "text/event-stream" });
+    if (lastEventId) headers.set("Last-Event-ID", lastEventId);
+    const response = await send({ path, method: "GET" }, { ...auth, headers });
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => null);
+      throw errorFromResponse(response, payload);
+    }
+    if (!response.body || response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
+      void response.body?.cancel().catch(() => undefined);
+      throw new ApiError("The gateway did not return an event stream.", "UI_INVALID_RESPONSE",
+        response.headers.get("X-Request-ID") ?? undefined);
+    }
+    if (signal.aborted) {
+      void response.body.cancel().catch(() => undefined);
+      return;
+    }
+    opened();
+    await readSse(response.body, signal, event);
+  }
+
   return {
     login(role: Role, id: string, secret: string, signal: AbortSignal) {
       const body: CustomerLogin | OpsLogin = role === "customer"
@@ -106,6 +129,16 @@ export function createShellApi(transport: ApiTransport) {
     verifyAudit(token: string, signal: AbortSignal) {
       return request({ path: auditVerifyPath, method: "GET" }, authorized(token, signal), isVerifyReport);
     },
+    async disputeProof(token: string, requestId: string, signal: AbortSignal) {
+      if (!/^req_[a-zA-Z0-9_-]{1,64}$/.test(requestId)) {
+        throw new ApiError("This request has no exportable payment disclosure.", "UI_INVALID_RESPONSE");
+      }
+      const response = await transport.request(`/v1/audit/proof/${encodeURIComponent(requestId)}`, {
+        ...authorized(token, signal), method: "GET", cache: "no-store",
+      });
+      if (!response.ok) throw errorFromResponse(response, await response.json().catch(() => null));
+      return response.text();
+    },
     async auditEvidence(token: string, requestId: string, signal: AbortSignal) {
       if (!requestId || requestId === "." || requestId === "..") {
         throw new ApiError("The evidence request identifier is invalid.", "UI_INVALID_RESPONSE");
@@ -133,28 +166,14 @@ export function createShellApi(transport: ApiTransport) {
     async streamOps(token: string, lastEventId: string | undefined, signal: AbortSignal, handlers: {
       opened: () => void; event: (event: OpsEvent) => void;
     }) {
-      const auth = authorized(token, signal);
-      const headers = new Headers({ ...auth.headers, Accept: "text/event-stream" });
-      if (lastEventId) headers.set("Last-Event-ID", lastEventId);
-      const response = await send({ path: opsStreamPath, method: "GET" }, { ...auth, headers });
-      if (!response.ok) {
-        const payload: unknown = await response.json().catch(() => null);
-        throw errorFromResponse(response, payload);
-      }
-      if (!response.body || response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
-        void response.body?.cancel().catch(() => undefined);
-        throw new ApiError("The gateway did not return an Ops event stream.", "UI_INVALID_RESPONSE",
-          response.headers.get("X-Request-ID") ?? undefined);
-      }
-      if (signal.aborted) {
-        void response.body.cancel().catch(() => undefined);
-        return;
-      }
-      handlers.opened();
-      await readSse(response.body, signal, (frame) => {
+      await stream(opsStreamPath, token, lastEventId, signal, handlers.opened, (frame) => {
         const event = decodeOpsEvent(frame);
         if (event) handlers.event(event);
       });
+    },
+    streamCustomer(token: string, lastEventId: string | undefined, signal: AbortSignal,
+      opened: () => void, event: (frame: SseFrame) => void) {
+      return stream("/v1/customer/stream", token, lastEventId, signal, opened, event);
     },
     customerMandates(token: string, cursor: string | null, signal: AbortSignal) {
       const query = cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
@@ -184,7 +203,7 @@ export function createShellApi(transport: ApiTransport) {
       return request({ path: approvalPath, method: "GET" },
         authorized(token, signal), isApprovalPage, `?${query}`);
     },
-    async decideApproval(token: string, id: string, choice: CustomerDecision, signal: AbortSignal) {
+    async decideApproval(token: string, id: string, choice: CustomerDecision, signal: AbortSignal, expectedRequestId?: string) {
       if (!id || id === "." || id === "..") throw new ApiError("The approval identifier is invalid.", "UI_INVALID_RESPONSE");
       const body: DecisionRequest = choice.decision === "APPROVE"
         ? { decision: "APPROVE", pin: choice.pin }
@@ -197,7 +216,7 @@ export function createShellApi(transport: ApiTransport) {
         const payload: unknown = await response.json().catch(() => null);
         const statuses = [200, 202] satisfies (keyof operations["decideEscalation"]["responses"])[];
         if (!statuses.some((status) => status === response.status)) throw errorFromResponse(response, payload);
-        return observeDecision(payload, response.status, id);
+        return observeDecision(payload, response.status, id, expectedRequestId);
       } catch (error) {
         throw redactPin(error, body.pin ?? undefined);
       }

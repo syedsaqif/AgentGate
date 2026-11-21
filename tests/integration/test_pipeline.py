@@ -7,16 +7,17 @@ FakeTokenService, FakeCatalog).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from bank_mock.main import create_bank_app
-from bank_mock.schema import AccountTable
+from bank_mock.schema import AccountTable, LedgerTable
 from contracts.identity_models import AuthContext
 from contracts.reason_codes import ReasonCode
 from gateway.executor.bank_client import HttpBankClient
@@ -326,3 +327,128 @@ async def test_end_to_end_pipeline_flow(pipeline_integration_env: dict[str, Any]
                 select(AccountTable).where(AccountTable.account_id == "ACC-001")
             )
             assert bank_acc.balance_paise == 12315000
+
+
+@pytest.mark.parametrize("reserved", [False, True], ids=["committed", "reserved"])
+@pytest.mark.parametrize(
+    ("check", "budget", "count"),
+    [
+        ("total_cap", 369999, 5),
+        ("count_cap", 1000000, 1),
+    ],
+)
+async def test_money_policy_counts_prior_usage(
+    pipeline_integration_env, monkeypatch, check, budget, count, reserved
+):
+    env = pipeline_integration_env
+    now = env["clock"].now()
+    deps = env["deps"]
+    bank_entered = asyncio.Event()
+    release_bank = asyncio.Event()
+    pay_bill = env["bank_client"].pay_bill
+
+    async def hold_reserved_payment(action, bank_key):
+        # Dispatch has committed its reservation. Delay only the first bank call.
+        if not bank_entered.is_set():
+            bank_entered.set()
+            await release_bank.wait()
+        return await pay_bill(action, bank_key)
+
+    async def bank_state():
+        async with env["bank_app"].state.session_factory() as session:
+            account = await session.get(AccountTable, "ACC-001")
+            debits = await session.scalar(
+                select(func.count())
+                .select_from(LedgerTable)
+                .where(LedgerTable.account_id == "ACC-001", LedgerTable.entry_type == "DEBIT")
+            )
+            return account.balance_paise, debits
+
+    async with AsyncClient(
+        transport=ASGITransport(app=env["app"]), base_url="http://gateway"
+    ) as client:
+        created = await client.post(
+            "/v1/customer/mandates",
+            headers={
+                "Authorization": "Bearer cust_session_001",
+            },
+            json={
+                "agent_id": "agt_billpal",
+                "valid_from": (now - timedelta(hours=1)).isoformat(),
+                "valid_until": (now + timedelta(days=1)).isoformat(),
+                "risk_profile": "balanced",
+                "pin": "4821",
+                "step_up": {"new_payee_requires_approval": False},
+                "grants": [
+                    {
+                        "grant_id": "electric",
+                        "action": "bill_pay",
+                        "currency": "INR",
+                        "account_ids": ["ACC-001"],
+                        "payee_ids": ["BILL-ELEC"],
+                        "max_per_txn_paise": 250000,
+                        "max_total_paise": budget,
+                        "max_count": count,
+                    }
+                ],
+            },
+        )
+        assert created.status_code == 201, created.text
+        mandate = created.json()["mandate"]
+        mandate_id = mandate["terms"]["mandate_id"]
+        env["identity_verifier"].result = env["default_auth"].model_copy(
+            update={
+                "mandate_id": mandate_id,
+                "mandate_hash": mandate["mandate_hash"],
+            }
+        )
+
+        async def pay(key):
+            return await client.post(
+                "/v1/payments/bills",
+                headers={"Idempotency-Key": key},
+                json={
+                    "from_account": "ACC-001",
+                    "payee_id": "BILL-ELEC",
+                    "currency": "INR",
+                    "amount_paise": 185000,
+                    "intent": {"task": "pay bill", "category": "utilities.electricity"},
+                },
+            )
+
+        if reserved:
+            monkeypatch.setattr(env["bank_client"], "pay_bill", hold_reserved_payment)
+        first = asyncio.create_task(pay("usage-first"))
+        try:
+            if reserved:
+                await asyncio.wait_for(bank_entered.wait(), timeout=10)
+            else:
+                assert (await first).status_code == 200
+            (usage,) = await deps.usage_reader.get(mandate_id)
+            assert (usage.committed_paise, usage.reserved_paise) == (
+                (0, 185000) if reserved else (185000, 0)
+            )
+            assert (usage.committed_count, usage.reserved_count) == ((0, 1) if reserved else (1, 0))
+            before = await bank_state()
+            denied = await pay("usage-second")
+            assert await bank_state() == before
+            error = denied.json()["error"]
+            steps = [
+                e.data
+                for e in deps.event_bus.get_since(0)
+                if e.event_type == "gate.step" and e.request_id == error["request_id"]
+            ]
+            (decision,) = [s["detail"]["verdict"] for s in steps if s["check"] == "final_decision"]
+            assert (decision, denied.status_code, error["code"]) == ("DENY", 403, "E_REQ_INVALID")
+            (decisive,) = [s for s in steps if s["detail"].get("decisive")]
+            assert (decisive["stage"], decisive["check"], decisive["status"]) == (
+                "policy",
+                check,
+                "fail",
+            )
+            assert (await deps.usage_reader.get(mandate_id)) == (usage,)
+        finally:
+            release_bank.set()
+            first_result = await first
+        assert first_result.status_code == 200 and first_result.json()["status"] == "EXECUTED"
+        assert await bank_state() == (12315000, 1)

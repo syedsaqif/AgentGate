@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["agent_sdk", "bank_mock", "contracts", "gateway", "simulator", "tools"]
+packages = ["agent_sdk", "bank_mock", "contracts", "demo_server", "gateway", "simulator", "tools"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

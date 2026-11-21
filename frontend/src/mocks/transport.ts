@@ -52,7 +52,8 @@ export function createMockTransport({
       const approvalRoute = isApprovalRoute(url.pathname);
       const opsRoute = isOpsRoute(url.pathname);
       const auditRoute = isAuditRoute(url.pathname);
-      const isCustomer = path === shellRoutes.customer.login || path === shellRoutes.customer.read || mandateRoute || approvalRoute;
+      const customerStream = path === "/v1/customer/stream" && init.method === "GET";
+      const isCustomer = customerStream || path === shellRoutes.customer.login || path === shellRoutes.customer.read || mandateRoute || approvalRoute;
       const role = isCustomer ? "customer" : "ops";
       if (init.method === "POST" && path === shellRoutes[role].login) {
         const credentials = readCredentials(init.body, role);
@@ -79,7 +80,7 @@ export function createMockTransport({
         });
       }
 
-      if (!mandateRoute && !approvalRoute && !opsRoute && !auditRoute
+      if (!customerStream && !mandateRoute && !approvalRoute && !opsRoute && !auditRoute
         && (init.method !== "GET" || path !== shellRoutes[role].read)) {
         return reject(400, "E_REQ_INVALID", "This request is outside the mock shell.");
       }
@@ -96,6 +97,7 @@ export function createMockTransport({
         return reject(401, "E_AUTH_EXPIRED", "Your session has expired. Sign in again.");
       }
 
+      if (customerStream) return new Response(new ReadableStream(), { headers: { "Content-Type": "text/event-stream" } });
       if (mandateRoute && session.role === "customer") {
         return mandates(url, init, session.customer, { respond, reject });
       }

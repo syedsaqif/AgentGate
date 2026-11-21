@@ -8,10 +8,13 @@ export type ObservedDecision = {
   conflictCode?: string;
 };
 
-export function ApprovalResult({ response }: { response: ObservedDecision }) {
+export function ApprovalResult({ response, streamReceipt }: { response: ObservedDecision; streamReceipt?: AuditReceipt }) {
   const { observation, conflictCode } = response;
   const state = observation?.state;
   const result = observation?.result;
+  const responseReceipt = result?.audit_ref;
+  const streamConfirmed = streamReceipt && responseReceipt
+    && streamReceipt.seq === responseReceipt.seq && streamReceipt.entry_hash === responseReceipt.entry_hash;
   const confirmed = !observation?.processing && result?.status === "EXECUTED"
     && (state === undefined || state === "APPROVED" || state === "EXECUTED");
   const unresolved = !confirmed && (state === "PENDING" || state === "APPROVED" || state === "EXECUTED" || !state);
@@ -24,7 +27,9 @@ export function ApprovalResult({ response }: { response: ObservedDecision }) {
       <p>Request <code>{observation?.requestId ?? response.requestId}</code></p>
       {showState && <p>Reported approval state <strong>{state}</strong></p>}
       {conflictState && <p>Provider conflict <strong>{conflictState}</strong></p>}
-      {observation?.processing ? (
+      {streamReceipt && observation?.processing && (!observation.requestId || observation.requestId === response.requestId) ? (
+        <><p>Customer stream confirmed execution <strong>EXECUTED</strong></p><Receipt receipt={streamReceipt} /></>
+      ) : observation?.processing ? (
         <p>Processing. Final execution and receipt are unconfirmed.</p>
       ) : (
         <>
@@ -32,7 +37,10 @@ export function ApprovalResult({ response }: { response: ObservedDecision }) {
           {result?.status === "EXECUTION_UNKNOWN" ? (
             <p>The execution outcome is unknown. A receipt is unconfirmed.</p>
           ) : confirmed ? (
-            result.audit_ref ? <Receipt receipt={result.audit_ref} /> : <p>Execution confirmed. The receipt is unavailable.</p>
+            responseReceipt ? <>
+              <Receipt receipt={responseReceipt} />
+              {streamConfirmed && <p>Customer receipt stream confirmed this receipt.</p>}
+            </> : <p>Execution confirmed. The receipt is unavailable.</p>
           ) : unresolved && (
             <p>{observation ? "Execution and receipt are unconfirmed." : "The final approval state and receipt are unconfirmed."}</p>
           )}

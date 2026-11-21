@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import type { ShellApi } from "./api/client";
 import type { ApiError } from "./api/errors";
 import type { Role } from "./api/shellWire";
@@ -6,6 +7,11 @@ import { ErrorNotice } from "./components/ErrorNotice";
 import { CustomerPage } from "./pages/customer/CustomerPage";
 import { OpsPage } from "./pages/ops/OpsPage";
 
+const PresenterStage = lazy(() => import("./pages/demo/stage/PresenterStage"));
+const DemoGatePage = lazy(() => import("./pages/demo/DemoGatePage"));
+const DemoBankPage = lazy(() => import("./pages/demo/bank/DemoBankPage"));
+const DemoAgentPage = lazy(() => import("./pages/demo/agent/DemoAgentPage"));
+
 type AppProps =
   | { mode: "mock"; api: ShellApi; demoIds: Record<Role, string> }
   | { mode: "real"; api: ShellApi }
@@ -13,6 +19,18 @@ type AppProps =
 
 export function App(props: AppProps) {
   const path = window.location.pathname.replace(/\/$/, "");
+  if (path === "/demo") {
+    return <Suspense fallback={<main>Loading presenter stage…</main>}><PresenterStage /></Suspense>;
+  }
+  if (path === "/demo/gate") {
+    return <Suspense fallback={<main>Loading payment gate…</main>}><DemoGatePage /></Suspense>;
+  }
+  if (path === "/demo/bank") {
+    return <Suspense fallback={<main>Loading bank…</main>}><DemoBankPage /></Suspense>;
+  }
+  if (path === "/demo/agent") {
+    return <Suspense fallback={<main>Loading assistant…</main>}><DemoAgentPage /></Suspense>;
+  }
   const isOps = path === "/ops";
   const demoIds = props.mode === "mock" ? props.demoIds : undefined;
   return (

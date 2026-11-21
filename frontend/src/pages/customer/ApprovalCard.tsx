@@ -1,5 +1,6 @@
 import { useRef, type FormEvent } from "react";
 import type { ApprovalItem, CustomerDecision } from "../../api/approvalWire";
+import { readAndClearPin } from "../../components/pin";
 import { formatInrPaise, formatKolkataTimestamp } from "../../formatting";
 
 export function ApprovalCard({ item, disabled, submitted, decide }: {
@@ -12,9 +13,7 @@ export function ApprovalCard({ item, disabled, submitted, decide }: {
   function approve(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (disabled || submitted) return;
-    const form = event.currentTarget;
-    const pin = String(new FormData(form).get("pin") ?? "");
-    form.reset();
+    const pin = readAndClearPin(event.currentTarget);
     if (pin.trim()) decide({ decision: "APPROVE", pin });
   }
 
@@ -26,6 +25,7 @@ export function ApprovalCard({ item, disabled, submitted, decide }: {
   return (
     <article className="mandate-record approval-card">
       <h3>{payee?.display_name ?? "Payee unavailable"}</h3>
+      <p>Request <code>{item.request_id}</code></p>
       <dl className="mandate-usage">
         <div><dt>Approval state</dt><dd>{item.state}</dd></div>
         <div><dt>Account</dt><dd>{from_account.masked_label.replaceAll(from_account.account_id, "••••")}</dd></div>

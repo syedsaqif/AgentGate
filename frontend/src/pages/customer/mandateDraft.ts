@@ -39,7 +39,7 @@ export function readMandateDraft(
     return fail("Enter a positive whole number for the count limit.");
   }
 
-  let moneyTerms: Pick<GrantInput, "payee_ids" | "currency" | "max_per_txn_paise" | "max_total_paise"> = {};
+  let moneyTerms: Pick<GrantInput, "payee_ids" | "currency" | "max_per_txn_paise" | "max_total_paise" | "category"> = {};
   const hasMoneyAction = actions.some(isMoneyAction);
   if (hasMoneyAction) {
     const payees = bootstrap.payees.filter(({ payee_id }) => fields.getAll("payee").includes(payee_id));
@@ -49,22 +49,33 @@ export function readMandateDraft(
     const lifetime = parseMandateCapPaise(String(fields.get("lifetime") ?? ""));
     if (!lifetime.ok) return fail(`Mandate-lifetime cap. ${lifetime.error}`);
     if (perTxn.value > lifetime.value) return fail("The per-transaction cap must fit within the lifetime cap.");
+    const category = String(fields.get("category") ?? "").trim();
     moneyTerms = {
       payee_ids: payees.map(({ payee_id }) => payee_id), currency: "INR",
       max_per_txn_paise: perTxn.value, max_total_paise: lifetime.value,
+      ...(category ? { category } : {}),
     };
   }
 
   const days = weekdays.flatMap((_, index) => fields.getAll("weekday").includes(String(index + 1)) ? [index + 1] : []);
-  const start = String(fields.get("start") ?? "");
-  const end = String(fields.get("end") ?? "");
+  const start = String(fields.get("start") ?? "").trim();
+  const end = String(fields.get("end") ?? "").trim();
   let timeWindow: TimeWindow | undefined;
   if (days.length || start || end) {
     const clock = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-    if (!days.length || !clock.test(start) || !clock.test(end) || start >= end) {
-      return fail("Select weekdays and enter an IST time window that starts and ends on the same day.");
+    const effectiveStart = start || "00:00";
+    const effectiveEnd = end || "23:59";
+    if (!clock.test(effectiveStart)) {
+      return fail("Enter a valid IST window start time (HH:MM).");
     }
-    timeWindow = { timezone: "Asia/Kolkata", weekdays: days, start_local: start, end_local: end };
+    if (!clock.test(effectiveEnd)) {
+      return fail("Enter a valid IST window end time (HH:MM).");
+    }
+    if (effectiveStart >= effectiveEnd) {
+      return fail("Enter an IST time window whose start is earlier than the end on the same day.");
+    }
+    const effectiveDays = days.length ? days : [1, 2, 3, 4, 5, 6, 7];
+    timeWindow = { timezone: "Asia/Kolkata", weekdays: effectiveDays, start_local: effectiveStart, end_local: effectiveEnd };
   }
 
   const stepUp: MandateTermsInput["step_up"] = {

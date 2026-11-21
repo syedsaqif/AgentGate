@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from contracts import CONTRACT_VERSION
 from gateway.config import AgentGateConfig
@@ -38,14 +39,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     deps: Dependencies = app.state.deps
     config: AgentGateConfig = app.state.config
 
-    # Strict check: real profile must reject missing or fake security dependencies
-    deps.validate_for_profile()
-
     # Configure database engine & session factory if not already supplied
-    if config.database.gateway_url:
+    if config.gateway_database_url:
         engine = getattr(app.state, "engine", None)
         if engine is None:
-            engine = create_db_engine(config.database.gateway_url)
+            engine = create_db_engine(config.gateway_database_url)
             session_factory = create_session_factory(engine)
             app.state.engine = engine
             app.state.session_factory = session_factory
@@ -67,6 +65,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
 
     # Initialize execution services if dependencies are present
     session_factory = getattr(app.state, "session_factory", None)
@@ -77,6 +79,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if deps.reservation_port is None and deps.mandate_reader is not None:
         deps.reservation_port = ReservationManager(deps.mandate_reader)
         deps.extra["reservation_manager"] = deps.reservation_port
+
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
 
     if (
         getattr(deps, "execution_service", None) is None
@@ -97,13 +102,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             mandate_reader=deps.mandate_reader,
             clock=deps.clock,
             session_factory=session_factory,
+            event_bus=deps.event_bus,
         )
         deps.execution_service = exec_srv
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
-
-    if deps.event_bus is None:
-        deps.event_bus = EventBus()
 
     if (
         deps.lifecycle is None
@@ -141,6 +144,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if exec_svc is not None and hasattr(exec_svc, "recover_unresolved"):
         await exec_svc.recover_unresolved()
 
+    # Strict check: real profile must reject missing or fake security dependencies
+    deps.validate_for_profile()
+
     yield
 
     # Teardown database resources
@@ -170,9 +176,12 @@ def create_app(
     app.state.overrides = overrides
 
     # If DB URL provided, set engine & session factory so unit tests without lifespan have DB
-    if config.database.gateway_url:
-        engine = create_db_engine(config.database.gateway_url)
-        session_factory = create_session_factory(engine)
+    if config.gateway_database_url:
+        engine = deps.extra.get("engine")
+        session_factory = deps.extra.get("session_factory")
+        if engine is None:
+            engine = create_db_engine(config.gateway_database_url)
+            session_factory = create_session_factory(engine)
         app.state.engine = engine
         app.state.session_factory = session_factory
         if deps.unit_of_work is None:
@@ -193,6 +202,8 @@ def create_app(
         deps.mandate_reader = deps.mandate_service
         deps.usage_reader = MandateUsageReader(deps.mandate_service)
         deps.policy_evaluator = deps.mandate_service.policy_evaluator
+        if "lazy_mandate_reader" in deps.extra:
+            deps.extra["lazy_mandate_reader"].target = deps.mandate_service
 
     # Initialize execution services if dependencies are present
     session_factory = getattr(app.state, "session_factory", None)
@@ -203,6 +214,9 @@ def create_app(
     if deps.reservation_port is None and deps.mandate_reader is not None:
         deps.reservation_port = ReservationManager(deps.mandate_reader)
         deps.extra["reservation_manager"] = deps.reservation_port
+
+    if deps.event_bus is None:
+        deps.event_bus = EventBus()
 
     if (
         getattr(deps, "execution_service", None) is None
@@ -223,13 +237,11 @@ def create_app(
             mandate_reader=deps.mandate_reader,
             clock=deps.clock,
             session_factory=session_factory,
+            event_bus=deps.event_bus,
         )
         deps.execution_service = exec_srv
         deps.execution_port = exec_srv
         deps.extra["execution_service"] = exec_srv
-
-    if deps.event_bus is None:
-        deps.event_bus = EventBus()
 
     if (
         deps.lifecycle is None
@@ -246,11 +258,36 @@ def create_app(
             agent_registry=deps.agent_registry,
         )
 
+    if deps.escalation_service is not None:
+        if getattr(deps.escalation_service, "session_factory", None) is None:
+            deps.escalation_service.session_factory = getattr(app.state, "session_factory", None)
+        if getattr(deps.escalation_service, "mandate_reader", None) is None:
+            deps.escalation_service.mandate_reader = deps.mandate_reader
+        if getattr(deps.escalation_service, "usage_reader", None) is None:
+            deps.escalation_service.usage_reader = deps.usage_reader
+        if getattr(deps.escalation_service, "execution_port", None) is None:
+            deps.escalation_service.execution_port = deps.execution_port
+        if getattr(deps.escalation_service, "audit_log", None) is None:
+            deps.escalation_service.audit_log = deps.audit_log
+        if getattr(deps.escalation_service, "catalog", None) is None:
+            deps.escalation_service.catalog = deps.catalog
+        if getattr(deps.escalation_service, "agent_registry", None) is None:
+            deps.escalation_service.agent_registry = deps.agent_registry
+
     # Validate profile after dependencies are composed
     deps.validate_for_profile()
 
-    # Register X-Request-ID middleware
     app.add_middleware(RequestIdMiddleware)
+    # The browser sends explicit bearer headers across origins.
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
 
     # Register uniform error envelope handlers
     register_error_handlers(app)
@@ -261,11 +298,44 @@ def create_app(
     app.include_router(pipeline_router)
     app.include_router(events_router)
 
+    # Mount Member B identity router if identity services are configured
+    if (
+        deps.agent_registry is not None
+        and deps.human_auth is not None
+        and deps.token_service is not None
+    ):
+        from gateway.identity.routes import build_identity_router, install_identity_error_handlers
+
+        install_identity_error_handlers(app)
+        identity_router = build_identity_router(
+            registry=deps.agent_registry,
+            human_auth=deps.human_auth,
+            token_service=deps.token_service,
+            lifecycle=deps.lifecycle,
+        )
+        app.include_router(identity_router)
+
+    # Mount Member B audit router if audit log is configured
+    if deps.audit_log is not None and deps.human_auth is not None:
+        from gateway.audit.routes import build_audit_router, install_audit_error_handlers
+
+        install_audit_error_handlers(app)
+        audit_router = build_audit_router(
+            audit_log=deps.audit_log,
+            human_auth=deps.human_auth,
+            dispute_trust_path=config.resolved_dispute_trust_path if profile == "real" else None,
+            dispute_checkpoint_path=(
+                config.dispute_checkpoint_path if profile == "real" else None
+            ),
+        )
+        app.include_router(audit_router)
+
     # Mount Member C escalation router if escalation service is configured
     if deps.escalation_service is not None:
         from gateway.escalation.routes import create_escalation_router
 
         escalation_router = create_escalation_router(
+            event_bus=deps.event_bus,
             service=deps.escalation_service,
             human_auth=deps.human_auth,
             lifecycle=deps.lifecycle,

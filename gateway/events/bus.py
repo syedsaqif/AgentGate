@@ -17,6 +17,7 @@ class EventItem:
     event_type: str
     data: dict[str, Any]
     timestamp: datetime
+    customer_audience: frozenset[str] = frozenset()
 
     @property
     def customer_id(self) -> str | None:
@@ -40,7 +41,7 @@ class EventBus:
     def __init__(self, history_limit: int = 2000) -> None:
         self.history_limit = history_limit
         self._history: deque[EventItem] = deque(maxlen=history_limit)
-        self._subscribers: set[asyncio.Queue[EventItem]] = set()
+        self._subscribers: dict[asyncio.Queue[EventItem], bool] = {}
         self._seq: int = 0
         self._lock: asyncio.Lock | None = None
 
@@ -50,19 +51,40 @@ class EventBus:
             self._lock = asyncio.Lock()
         return self._lock
 
-    async def publish(self, event_type: str, data: dict[str, Any]) -> EventItem:
+    async def publish(
+        self,
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        customer_audience: frozenset[str] = frozenset(),
+    ) -> EventItem:
         """Publish a committed event to all active subscribers and append to history."""
         async with self.lock:
+            if event_type == "gate.step":
+                previous = next(
+                    (
+                        item
+                        for item in reversed(self._history)
+                        if item.event_type == "gate.step" and item.request_id == data["request_id"]
+                    ),
+                    None,
+                )
+                # After replay eviction use the bus high-water mark to avoid reusing a sequence.
+                first = 1 if data["stage"] == "edge" else self._seq + 1
+                data = {**data, "seq": previous.data["seq"] + 1 if previous else first}
             self._seq += 1
             item = EventItem(
                 event_id=self._seq,
                 event_type=event_type,
                 data=data,
                 timestamp=datetime.now(UTC),
+                customer_audience=customer_audience,
             )
             self._history.append(item)
 
-            for queue in list(self._subscribers):
+            for queue, include_trace in list(self._subscribers.items()):
+                if event_type == "gate.step" and not include_trace:
+                    continue
                 try:
                     queue.put_nowait(item)
                 except asyncio.QueueFull:
@@ -75,15 +97,17 @@ class EventBus:
 
             return item
 
-    def subscribe(self, max_queue_size: int = 256) -> asyncio.Queue[EventItem]:
+    def subscribe(
+        self, max_queue_size: int = 256, *, include_trace: bool = True
+    ) -> asyncio.Queue[EventItem]:
         """Subscribe to the event stream, returning an asyncio Queue."""
         q: asyncio.Queue[EventItem] = asyncio.Queue(maxsize=max_queue_size)
-        self._subscribers.add(q)
+        self._subscribers[q] = include_trace
         return q
 
     def unsubscribe(self, queue: asyncio.Queue[EventItem]) -> None:
         """Remove a subscriber queue."""
-        self._subscribers.discard(queue)
+        self._subscribers.pop(queue, None)
 
     def get_since(self, last_event_id: int) -> list[EventItem]:
         """Return history events with event_id > last_event_id."""

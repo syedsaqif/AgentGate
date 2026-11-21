@@ -5,17 +5,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from contracts.common import ActionType, FinalDecision, RiskLevel
 from contracts.core_models import ActionParams, CanonicalAction, Intent
 from contracts.escalation_models import EscalationDecision, EscalationState
+from contracts.identity_models import AuthContext
 from contracts.reason_codes import ReasonCode
 from contracts.risk_models import RiskResult, RiskSignal
 from gateway.errors import register_error_handlers
-from gateway.escalation.routes import create_escalation_router
+from gateway.escalation.routes import authorize_escalation_agent, create_escalation_router
 from gateway.escalation.service import EscalationConfig, PersistentEscalationService
+from gateway.events.bus import EventBus
 from tests.support.c.providers import (
     DummyTx,
     FixtureHumanAuth,
@@ -285,6 +287,7 @@ async def test_cancel_for_mandate_and_agent(base_clock: FrozenClock) -> None:
 
 def _setup_test_app(
     clock: FrozenClock,
+    event_bus: EventBus | None = None,
 ) -> tuple[
     TestClient,
     PersistentEscalationService,
@@ -301,7 +304,21 @@ def _setup_test_app(
 
     app = FastAPI()
     register_error_handlers(app)
+
+    def fixture_agent_auth(request: Request) -> AuthContext:
+        return AuthContext(
+            customer_id="cust_001",
+            agent_id="agt_billpal",
+            mandate_id=request.headers.get("X-Fixture-Mandate", "man_esc_001"),
+            mandate_hash="0" * 64,
+            jkt="fixture-thumbprint",
+            token_jti="fixture-token",
+            proof_jti="fixture-proof",
+        )
+
+    app.dependency_overrides[authorize_escalation_agent] = fixture_agent_auth
     router = create_escalation_router(
+        event_bus=event_bus,
         service=service,
         human_auth=human_auth,
         lifecycle=lifecycle,
@@ -320,20 +337,17 @@ async def test_route_get_escalations(base_clock: FrozenClock) -> None:
     esc = await service.create(_make_action(), _make_assessment(), tx)
 
     # Authorized agent query
-    resp = client.get(
-        f"/v1/escalations/{esc.escalation_id}",
-        headers={"Authorization": "Bearer tok_customer_001"},
-    )
+    resp = client.get(f"/v1/escalations/{esc.escalation_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["escalation_id"] == str(esc.escalation_id)
     assert data["state"] == "PENDING"
     assert "result" in data
 
-    # Unauthorized / wrong owner query returns 404
+    # A verified token for this agent under another mandate returns 404.
     resp_wrong = client.get(
         f"/v1/escalations/{esc.escalation_id}",
-        headers={"X-Subject-ID": "cust_intruder"},
+        headers={"X-Fixture-Mandate": "another_mandate"},
     )
     assert resp_wrong.status_code == 404
     assert resp_wrong.json()["error"]["code"] == ReasonCode.E_REQ_INVALID.value
@@ -341,7 +355,8 @@ async def test_route_get_escalations(base_clock: FrozenClock) -> None:
 
 @pytest.mark.asyncio
 async def test_route_decision_approve_with_pin(base_clock: FrozenClock) -> None:
-    client, service, _, exec_port, _, _ = _setup_test_app(base_clock)
+    bus = EventBus()
+    client, service, _, exec_port, _, _ = _setup_test_app(base_clock, bus)
     tx = DummyTx()
     esc = await service.create(_make_action(), _make_assessment(), tx)
 
@@ -356,6 +371,12 @@ async def test_route_decision_approve_with_pin(base_clock: FrozenClock) -> None:
     assert data["state"] == EscalationState.EXECUTED.value
     assert len(exec_port.request_ids) == 1
     assert exec_port.request_ids[0] == str(esc.request_id)
+    rows = [e.data for e in bus.get_since(0) if e.event_type == "gate.step"]
+    assert [r["stage"] for r in rows] == ["approval", "execution"]
+    assert rows[0]["detail"] == {"decision": "APPROVE"}
+    assert rows[1]["detail"] == {"outcome": "EXECUTED"}
+    assert rows[0]["seq"] < rows[1]["seq"]
+    assert all(r["request_id"] == str(esc.request_id) for r in rows)
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -88,7 +89,10 @@ async def get_transactions(
             amount_paise=row.amount_paise,
             balance_after_paise=row.balance_after_paise,
             reference=row.reference,
-            created_at=row.created_at,
+            created_at=(
+                row.created_at.replace(tzinfo=UTC)
+                if row.created_at.tzinfo is None else row.created_at
+            ),
         )
         for row in rows
     )

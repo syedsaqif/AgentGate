@@ -1,4 +1,4 @@
-name: Bootstrap integration gate
+name: Integration gate
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  contracts-and-scaffold:
+  backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -19,11 +19,14 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - run: uv run python -m tools.dev check-contracts
-      - run: uv run pytest -m "scaffold or contract"
-      - run: uv run ruff check contracts tests tools/dev.py tools/verify_vectors.py
+      - run: uv run python -m tools.verify_vectors
+      - run: uv run pytest
+      - run: uv run ruff check
+      - run: uv run mypy
 
-  frontend-scaffold:
+  frontend-and-real-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -34,11 +37,18 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+        working-directory: .
       - run: npm ci
+      - run: npm run api:check
       - run: npm run typecheck
       - run: npm test -- --run
       - run: npm run build
-
-# This workflow is deliberately named a bootstrap gate. Replace/extend it with
-# real-provider API compatibility, integration, scenario/race, and UI smoke
-# gates as IC1-IC4 features land; never relabel fixture checks as security proof.
+        env:
+          VITE_GATEWAY_ORIGIN: http://127.0.0.1:8000
+      - run: npx playwright install --with-deps chromium
+      - run: npm run smoke:real

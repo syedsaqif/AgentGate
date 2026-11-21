@@ -208,6 +208,63 @@ describe("Customer approval inbox", () => {
     expect(decisionCalls(request.mock.calls)).toHaveLength(1);
   });
 
+  it.each(["before", "after"])("correlates a Customer stream receipt arriving %s the decision's 202", async (when) => {
+    const mock = createMockTransport();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let signal: AbortSignal | null | undefined;
+    let reply!: () => void;
+    const deferred = new Promise<void>((resolve) => { reply = resolve; });
+    const request = vi.fn(async (path: string, init: RequestInit) => {
+      if (path === "/v1/customer/stream") {
+        signal = init.signal;
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+          { headers: { "Content-Type": "text/event-stream" } });
+      }
+      const response = await mock.request(path, init);
+      if (path !== decisionUrl) return response;
+      await deferred;
+      return new Response(await response.text(), { status: 202 });
+    });
+    async function emit(id: string, requestId: string) {
+      const data = { event_type: "bank.executed", event_id: id, request_id: requestId,
+        data: { status: "EXECUTED", audit_ref: { seq: 37, entry_hash: "b".repeat(64) } } };
+      const frame = `id: ${id}\nevent: bank.executed\ndata: ${JSON.stringify(data)}\n\n`;
+      await act(async () => stream.enqueue(new TextEncoder().encode(frame)));
+    }
+    await signIn({ request });
+    expect(await screen.findByText("Customer receipt stream connected.")).toBeVisible();
+    enterPin();
+    click("Approve");
+    await emit("36", "req_different_payment");
+    if (when === "before") await emit("37", "req_esc_mock_s9");
+    await act(async () => reply());
+    if (when === "after") {
+      expect(await screen.findByText("Processing. Final execution and receipt are unconfirmed.")).toBeVisible();
+      expect(screen.queryByText("Copy receipt")).not.toBeInTheDocument();
+      await emit("37", "req_esc_mock_s9");
+    }
+    expect(await screen.findByText(/Customer stream confirmed execution/)).toHaveTextContent("EXECUTED");
+    expect(results().getByText(/audit_ref.seq/)).toHaveTextContent(`audit_ref.seq: 37 audit_ref.entry_hash: ${"b".repeat(64)}`);
+    expect(decisionCalls(request.mock.calls)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByText("Copy receipt")).not.toBeInTheDocument();
+  });
+
+  it("withholds a decision receipt whose nested execution belongs to another request", async () => {
+    const mock = createMockTransport();
+    await signIn({ request: async (path, init) => {
+      const response = await mock.request(path, init);
+      if (path !== decisionUrl) return response;
+      const payload = await response.json();
+      return Response.json({ ...payload, result: { ...payload.result, request_id: "req_other_payment" } });
+    } });
+    enterPin();
+    click("Approve");
+    expect(await screen.findByText("Execution and receipt are unconfirmed.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Copy receipt" })).not.toBeInTheDocument();
+  });
+
   it("follows an opaque cursor on the Customer pending list", async () => {
     const mock = createMockTransport({ approvalCases: [{ id: "esc_page_1" }, { id: "esc_page_2" }] });
     const request = vi.fn((path: string, init: RequestInit) => mock.request(

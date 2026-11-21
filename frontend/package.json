@@ -14,22 +14,31 @@
     "api:generate": "node scripts/generate-api.mjs",
     "api:check": "node scripts/generate-api.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+    "smoke:real": "node tests/real-smoke/run.mjs && node tests/real-smoke/stage.mjs",
+    "smoke:stage": "node tests/real-smoke/stage.mjs",
+    "capture:stage": "node tests/real-smoke/capture-stage.mjs",
     "test": "vitest",
     "build": "tsc -b && vite build"
   },
   "dependencies": {
+    "fflate": "0.8.3",
+    "qrcode": "1.5.4",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
+    "@types/qrcode": "1.5.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.3.0",
     "ajv": "8.20.0",
     "jsdom": "31.0.1",
+    "jsqr": "1.4.0",
     "openapi-typescript": "6.7.6",
+    "playwright": "1.65.1",
+    "pngjs": "5.0.0",
     "typescript": "7.0.2",
     "vite": "8.3.8",
     "vitest": "5.1.0"

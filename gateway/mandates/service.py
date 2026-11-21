@@ -43,6 +43,29 @@ def get_action_str(action: Any) -> str:
     return str(action.value if hasattr(action, "value") else action)
 
 
+class MandateNotFoundError(AgentGateError, LookupError):
+    """Exception raised when a requested mandate is not found."""
+
+    def __init__(self, mandate_id: str) -> None:
+        super().__init__(
+            code=ReasonCode.E_REQ_INVALID,
+            message=f"Mandate '{mandate_id}' not found",
+            status_code=404,
+        )
+
+
+class DeferredMandateReader(MandateReader):
+    """Delegating MandateReader resolving circular dependencies during startup."""
+
+    def __init__(self, target: MandateReader | None = None) -> None:
+        self.target = target
+
+    async def get(self, mandate_id: str, tx: Tx | None = None) -> MandateSnapshot:
+        if self.target is None:
+            raise MandateNotFoundError(mandate_id)
+        return await self.target.get(mandate_id, tx=tx)
+
+
 class MandateUsageReader(UsageReader):
     """Adapter exposing the UsageReader protocol get(...) method for MandateService."""
 
@@ -309,11 +332,7 @@ class MandateService(MandateReader, UsageReader):
                 row = await repository.get_mandate(session, mandate_id)
 
         if not row:
-            raise AgentGateError(
-                code=ReasonCode.E_REQ_INVALID,
-                message=f"Mandate '{mandate_id}' not found",
-                status_code=404,
-            )
+            raise MandateNotFoundError(mandate_id)
 
         terms_data = json.loads(row.terms_json)
         terms = MandateTerms.model_validate(terms_data)
@@ -396,7 +415,17 @@ class MandateService(MandateReader, UsageReader):
                 key_id=row.key_id,
             )
             usage = await self.get_usage(row.mandate_id)
-            items.append(CustomerMandateItem(mandate=snapshot, usage=usage))
+            items.append(
+                CustomerMandateItem(
+                    terms=snapshot.terms,
+                    status=snapshot.status,
+                    mandate_hash=snapshot.mandate_hash,
+                    sig=snapshot.sig,
+                    key_id=snapshot.key_id,
+                    usage=usage,
+                    mandate=snapshot,
+                )
+            )
 
         return tuple(items), next_cursor
 

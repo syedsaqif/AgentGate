@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -398,8 +399,131 @@ async def test_bank_outcome_mapping(clock: FrozenClock) -> None:
     assert rec3.result.status == ActionStatus.EXECUTION_UNKNOWN
 
 
-def test_real_stack_handoff_skipped_with_reason() -> None:
-    pytest.skip(
-        "Real-stack handoff integration test skipped: Member A real execution "
-        "and bank client modules have not landed yet."
+@pytest.mark.asyncio
+async def test_real_stack_handoff(tmp_path: Path) -> None:
+    """Verify an approved escalation dispatches through the real ExecutionService."""
+    from httpx import ASGITransport
+
+    from bank_mock.main import create_bank_app
+    from bank_mock.schema import BankBase, create_bank_db_engine, create_bank_session_factory
+    from bank_mock.service import seed_bank_data
+    from gateway.executor.actions import ActionStore
+    from gateway.executor.bank_client import HttpBankClient
+    from gateway.executor.reservations import ReservationManager
+    from gateway.executor.service import ExecutionService
+    from gateway.platform.db import Base, SqliteUnitOfWork, create_db_engine, create_session_factory
+    from tests.support.b.providers import MemoryAuditLog
+
+    # Setup real simulated bank
+    bank_db = tmp_path / "bank_handoff.db"
+    bank_engine = create_bank_db_engine(f"sqlite+aiosqlite:///{bank_db.as_posix()}")
+    async with bank_engine.begin() as conn:
+        await conn.run_sync(BankBase.metadata.create_all)
+    b_sf = create_bank_session_factory(bank_engine)
+    async with b_sf() as b_sess:
+        await seed_bank_data(b_sess)
+    await bank_engine.dispose()
+
+    bank_app = create_bank_app(
+        db_url=f"sqlite+aiosqlite:///{bank_db.as_posix()}",
+        service_key="test-key-handoff",
     )
+    bank_client = HttpBankClient(
+        base_url="http://bank",
+        service_key="test-key-handoff",
+        transport=ASGITransport(app=bank_app),
+    )
+
+    # Setup gateway DB
+    gw_db = tmp_path / "gw_handoff.db"
+    gw_engine = create_db_engine(f"sqlite+aiosqlite:///{gw_db.as_posix()}")
+    async with gw_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    gw_sf = create_session_factory(gw_engine)
+    uow = SqliteUnitOfWork(gw_sf)
+
+    clock = FrozenClock(datetime(2026, 11, 19, 11, 0, 0, tzinfo=UTC))
+    audit_log = MemoryAuditLog()
+    action_store = ActionStore(gw_sf)
+    mandate = _make_mandate_snapshot("man_real_001")
+    mandate_reader = FixtureMandateReader({"man_real_001": mandate})
+    res_mgr = ReservationManager(mandate_reader)
+
+    exec_service = ExecutionService(
+        unit_of_work=uow,
+        action_store=action_store,
+        reservation_manager=res_mgr,
+        bank_client=bank_client,
+        audit_log=audit_log,
+        mandate_reader=mandate_reader,
+        clock=clock,
+        session_factory=gw_sf,
+    )
+
+    # Persist the mandate and action record in ActionStore first
+    from gateway.mandates.schema import MandateTable
+
+    action = _make_action("req_real_001", mandate_id="man_real_001", amount_paise=185000)
+    async with uow as tx:
+        m_row = MandateTable(
+            mandate_id="man_real_001",
+            version=1,
+            customer_id="cust_001",
+            agent_id="agt_billpal",
+            status="ACTIVE",
+            terms_json=mandate.terms.model_dump_json(),
+            mandate_hash=mandate.mandate_hash,
+            sig=mandate.sig,
+            key_id=mandate.key_id,
+            created_at=clock.now(),
+            updated_at=clock.now(),
+        )
+        tx.session.add(m_row)
+        await action_store.record_action(
+            tx.session, action, bank_idempotency_key="bank_idem_real_1"
+        )
+
+    # Create and approve escalation in PersistentEscalationService
+    esc_service = PersistentEscalationService(
+        config=EscalationConfig(),
+        clock=clock,
+        session_factory=gw_sf,
+        mandate_reader=mandate_reader,
+        usage_reader=FixtureUsageReader(),
+        execution_port=exec_service,
+        audit_log=audit_log,
+    )
+
+    dummy_tx = DummyTx("tx_h1")
+    created = await esc_service.create(action, _make_assessment(), dummy_tx)
+    assert created.state == EscalationState.PENDING
+
+    # Customer approves
+    decided = await esc_service.decide(
+        created.escalation_id, EscalationDecision.APPROVE, "cust_001", dummy_tx
+    )
+    assert decided.state == EscalationState.APPROVED
+
+    # Execute approved escalation via real ExecutionService
+    result = await esc_service.execute_approved(
+        created.escalation_id, dummy_tx, execution_port=exec_service
+    )
+    assert result.status == ActionStatus.EXECUTED
+    assert result.bank_result is not None
+    assert result.bank_result.status == BankStatus.EXECUTED
+    assert result.bank_result.bank_operation_id
+
+    # Verify escalation state is updated to EXECUTED
+    loaded = await esc_service.get_owned(created.escalation_id, "cust_001")
+    assert loaded.state == EscalationState.EXECUTED
+    assert loaded.result is not None
+    assert loaded.result.status == ActionStatus.EXECUTED
+
+    # Idempotent second call returns identical result without re-executing
+    second_result = await esc_service.execute_approved(
+        created.escalation_id, dummy_tx, execution_port=exec_service
+    )
+    assert second_result.status == ActionStatus.EXECUTED
+    assert second_result.bank_result.bank_operation_id == result.bank_result.bank_operation_id
+
+    await gw_engine.dispose()
