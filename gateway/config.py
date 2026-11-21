@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_GATEWAY_URL = "sqlite+aiosqlite:///runtime/gateway.db"
+DEFAULT_AUDIT_KEY_PATH = "runtime/audit.pem"
+DEFAULT_DISPUTE_TRUST_PATH = "runtime/trust.json"
 
 
 class ProfileSettings(BaseModel):
@@ -20,7 +23,7 @@ class ProfileSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    gateway_url: str = "sqlite+aiosqlite:///runtime/gateway.db"
+    gateway_url: str = DEFAULT_GATEWAY_URL
     bank_url: str = "sqlite+aiosqlite:///runtime/bank.db"
     wal: bool = True
     workers: int = 1
@@ -67,13 +70,7 @@ class AgentGateConfig(BaseSettings):
             else None
         )
     )
-    audit_signing_key_path: str | None = Field(
-        default_factory=lambda: (
-            str(ROOT_DIR / "runtime" / "audit.pem")
-            if (ROOT_DIR / "runtime" / "audit.pem").exists()
-            else None
-        )
-    )
+    audit_signing_key_path: str | None = None
     token_signing_key_path: str | None = Field(
         default_factory=lambda: (
             str(ROOT_DIR / "runtime" / "token.pem")
@@ -81,13 +78,7 @@ class AgentGateConfig(BaseSettings):
             else None
         )
     )
-    dispute_trust_path: str | None = Field(
-        default_factory=lambda: (
-            str(ROOT_DIR / "runtime" / "trust.json")
-            if (ROOT_DIR / "runtime" / "trust.json").exists()
-            else None
-        )
-    )
+    dispute_trust_path: str | None = None
     dispute_checkpoint_path: str | None = None
 
     profiles: dict[str, ProfileSettings] = Field(
@@ -116,6 +107,25 @@ class AgentGateConfig(BaseSettings):
         if self.gateway_db:
             return f"sqlite+aiosqlite:///{Path(self.gateway_db).as_posix()}"
         return self.database.gateway_url
+
+    @property
+    def resolved_audit_signing_key_path(self) -> str | None:
+        if self.audit_signing_key_path:
+            return self.audit_signing_key_path
+        if self.gateway_database_url == DEFAULT_GATEWAY_URL:
+            return DEFAULT_AUDIT_KEY_PATH
+        return None
+
+    @property
+    def resolved_dispute_trust_path(self) -> str | None:
+        if self.dispute_trust_path:
+            return self.dispute_trust_path
+        if (
+            self.gateway_database_url == DEFAULT_GATEWAY_URL
+            and Path(DEFAULT_DISPUTE_TRUST_PATH).is_file()
+        ):
+            return DEFAULT_DISPUTE_TRUST_PATH
+        return None
 
     @property
     def bank_database_url(self) -> str:

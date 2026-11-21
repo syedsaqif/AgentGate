@@ -14,6 +14,7 @@ try {
     $env:AGENTGATE_BANK_DB_URL = 'sqlite+aiosqlite:///' + $env:AGENTGATE_BANK_DB.Replace('\', '/')
     $env:AGENTGATE_BANK_SERVICE_CREDENTIAL = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
     $env:AGENTGATE_AUDIT_SIGNING_KEY_PATH = Join-Path $demoDir 'audit.pem'
+    $env:AGENTGATE_DISPUTE_TRUST_PATH = Join-Path $demoDir 'trust.json'
     $env:AGENTGATE_TOKEN_SIGNING_KEY_PATH = Join-Path $demoDir 'token.pem'
     $env:AGENTGATE_MANDATE_SIGNING_KEY_PATH = Join-Path $demoDir 'mandate.pem'
     $env:D06_BILLPAL_KEY = Join-Path $demoDir 'billpal.pem'

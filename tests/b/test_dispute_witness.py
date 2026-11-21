@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from asyncio import to_thread
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,10 +16,38 @@ from contracts.audit_models import AuditEvent
 from gateway.audit.append import SqlAuditLog
 from gateway.audit.dispute import ProofError, Trust
 from gateway.audit.schema import create_audit_schema
+from gateway.config import AgentGateConfig
 from gateway.identity.crypto import public_key_to_jwk, serialize_ed25519_private_key_pem
 from gateway.identity.schema import create_sqlite_identity_engine
+from gateway.main import create_app
 from gateway.platform.clock import SystemClock
 from tools.audit_witness import publish
+from tools.seed import _prepare_keys
+
+
+@pytest.mark.asyncio
+async def test_seeded_default_audit_key_survives_gateway_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "AGENTGATE_GATEWAY_DB", "AGENTGATE_AUDIT_SIGNING_KEY_PATH", "AGENTGATE_DISPUTE_TRUST_PATH",
+        "D06_BILLPAL_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    _prepare_keys(AgentGateConfig.load(profile="real"))
+    for event_type in ("before_restart", "after_restart"):
+        app = create_app(profile="real")
+        trust_path = app.state.config.resolved_dispute_trust_path
+        assert trust_path is not None
+        trust = Trust.model_validate_json(await to_thread(Path(trust_path).read_bytes))
+        async with app.router.lifespan_context(app):
+            log = app.state.deps.audit_log
+            assert public_key_to_jwk(log.public_key) == trust.audit_key.model_dump()
+            await log.append(AuditEvent(event_type=event_type, occurred_at=datetime.now(UTC)))
+            report = await log.verify()
+    assert report.valid
+    assert report.entries_checked == 2
 
 
 @pytest.mark.asyncio
