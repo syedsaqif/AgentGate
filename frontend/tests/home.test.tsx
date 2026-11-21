@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { App } from "../src/App";
 import { createShellApi } from "../src/api/client";
@@ -6,27 +6,26 @@ import { createMockTransport } from "../src/mocks/transport";
 import { demoIds } from "../src/mocks/fixtures";
 
 describe("HomePage", () => {
-  it("renders homepage at root path with links to demo, demo/bank, and demo/agent and no customer/ops links", () => {
+  it("shows one preview and destination link for the selected tab", () => {
     window.history.replaceState(null, "", "/");
     render(<App mode="mock" api={createShellApi(createMockTransport())} demoIds={demoIds} />);
 
-    expect(screen.getByRole("heading", { name: "Autonomous Financial Safety Gateway" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "See how an AI payment gets approved." })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Presenter Stage" })).toHaveAttribute("aria-selected", "true");
+    for (const [name, route, preview] of [
+      ["Presenter Stage", "/demo", "Payment journey"],
+      ["Demo Bank", "/demo/bank", "Agent mandate"],
+      ["Payment Assistant", "/demo/agent", "BillPal conversation"],
+      ["Payment Gate", "/demo/gate", "Evaluation stages"],
+    ]) {
+      fireEvent.click(screen.getByRole("tab", { name }));
+      expect(screen.getByRole("tabpanel", { name })).toBeVisible();
+      expect(screen.getByRole("heading", { name: preview })).toBeVisible();
+      expect(screen.getAllByRole("link")).toHaveLength(1);
+      expect(screen.getByRole("link", { name: "Open " + name })).toHaveAttribute("href", route);
+    }
 
-    const stageLink = screen.getByRole("link", { name: /Presenter Stage/i });
-    expect(stageLink).toHaveAttribute("href", "/demo");
-
-    const bankLink = screen.getByRole("link", { name: /Demo Bank/i });
-    expect(bankLink).toHaveAttribute("href", "/demo/bank");
-
-    const agentLink = screen.getByRole("link", { name: /Payment Assistant/i });
-    expect(agentLink).toHaveAttribute("href", "/demo/agent");
-
-    const gateLink = screen.getByRole("link", { name: /Payment Gate/i });
-    expect(gateLink).toHaveAttribute("href", "/demo/gate");
-
-    // Ensure customer and operations links are excluded
-    expect(screen.queryByRole("link", { name: /^Customer$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /^Ops$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /operations/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("tab", { selected: true }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Presenter Stage" })).toHaveFocus();
   });
 });
