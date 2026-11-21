@@ -17,6 +17,25 @@ const initial = () => new URLSearchParams(window.location.search);
 const aliases = (card: Scenario) => (card as Capture["card"]).aliases ?? [];
 const title = (card: Scenario) => [...aliases(card), card.id].join(" / ") + " · " + card.title;
 
+const SCENARIO_GROUPS = [
+  { id: "normal", label: "Normal Payments & Step-Up Approvals (P1–P8, N2)" },
+  { id: "prompt_injection", label: "Prompt Injection & Jailbreaks (I1–I5)" },
+  { id: "limits_and_abuse", label: "Policy & Spending Limit Abuse (L1–L7)" },
+  { id: "identity_integrity", label: "Cryptographic & Identity Attacks (C1–C6)" },
+  { id: "audit_tamper", label: "Audit Log Tamper Detection (T1)" },
+] as const;
+
+function getScenarioGroup(card?: Scenario): string {
+  if (card?.group) return card.group;
+  const id = card?.id ?? "";
+  if (id.startsWith("P") || id.startsWith("N")) return "normal";
+  if (id.startsWith("I")) return "prompt_injection";
+  if (id.startsWith("L")) return "limits_and_abuse";
+  if (id.startsWith("C")) return "identity_integrity";
+  if (id.startsWith("T")) return "audit_tamper";
+  return "other";
+}
+
 function useAgentHistory(run?: Run) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [status, setStatus] = useState("");
@@ -148,6 +167,17 @@ export default function PresenterStage() {
     : catalogue.map(card => ({key: card.id, card}));
   options.sort((a,b) => a.key.localeCompare(b.key, "en", {numeric:true}));
 
+  const groupedOptions = useMemo(() => {
+    const map = new Map<string, typeof options>();
+    for (const opt of options) {
+      const grp = getScenarioGroup(opt.card);
+      const list = map.get(grp) ?? [];
+      list.push(opt);
+      map.set(grp, list);
+    }
+    return map;
+  }, [options]);
+
   useEffect(() => {
     if (recorded) return;
     const controller = new AbortController();
@@ -221,9 +251,35 @@ export default function PresenterStage() {
         {(["live","recorded"] as const).map(value => <button key={value} aria-pressed={mode === value}
           disabled={busy} onClick={() => changeMode(value)}>{value === "live" ? "Live" : "Recorded"}</button>)}
       </div>
-      <label className="stage-picker">Scenario<select aria-label="Scenario" value={selected} disabled={busy}
+      <label className="stage-picker">Scenario<select aria-label="Scenario" value={selected} disabled={busy || (recorded && options.length === 0)}
         onChange={event => setSelected(event.target.value)}>
-        {options.map(({key,card}) => <option key={key} value={key}>{title(card)}{key === "N2-after-N1" ? " · after N1" : ""}</option>)}
+        {options.length === 0 && (
+          <option value="" disabled>No recordings found — switch to Live</option>
+        )}
+        {SCENARIO_GROUPS.map(({ id: grpId, label }) => {
+          const items = groupedOptions.get(grpId);
+          if (!items || items.length === 0) return null;
+          return (
+            <optgroup key={grpId} label={label}>
+              {items.map(({ key, card }) => (
+                <option key={key} value={key}>
+                  {title(card)}{key === "N2-after-N1" ? " · after N1" : ""}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
+        {Array.from(groupedOptions.entries())
+          .filter(([grpId]) => !SCENARIO_GROUPS.some(g => g.id === grpId))
+          .map(([grpId, items]) => (
+            <optgroup key={grpId} label={grpId}>
+              {items.map(({ key, card }) => (
+                <option key={key} value={key}>
+                  {title(card)}{key === "N2-after-N1" ? " · after N1" : ""}
+                </option>
+              ))}
+            </optgroup>
+          ))}
       </select></label>
       <button className="stage-run" disabled={!selectedCard || busy || waiting} onClick={() => void play()}>
         {selectedCard && isFixture(selectedCard) ? "Show fixture" : recorded ? "Play recording" : "Run scenario"}</button>
@@ -244,7 +300,7 @@ export default function PresenterStage() {
       <span className="stage-badge" data-mode={live ? "live" : "recorded"}>{live ? "Live" : fixture ? "Recorded fixture" : "Recorded"}</span>
     </header>
     <div className="stage-help">
-      <span>{recorded || fixture ? "Read-only playback from local evidence." : "Soft reset reinstates BillPal, renews the mandate and signs the bank out. Balance, ledger and risk history carry over."}</span>
+      <span>{recorded ? (options.length === 0 ? "No offline recordings found. Switch to \"Live\" mode above to run real-time scenarios against the gateway." : "Read-only playback from local evidence.") : fixture ? "Read-only playback from local evidence." : "Soft reset reinstates BillPal, renews the mandate and signs the bank out. Balance, ledger and risk history carry over."}</span>
       {catalogueError && !recorded && <span role="alert">Live catalogue unavailable. <button onClick={() => setCatalogueAttempt(n => n+1)}>Reconnect</button> or select Recorded.</span>}
       {message && <span role="status">{message}</span>}
     </div>

@@ -9,7 +9,18 @@ body:has(.presenter-stage) { background: #101b2a; }
 .stage-bar button, .stage-bar select { box-sizing: border-box; min-height: 2.5rem; }
 .stage-bar button:disabled { opacity: .55; }
 .stage-bar .stage-run { background: #a2ebce; color: #0a332b; font-weight: 700; }
-.stage-picker select { max-width: min(20rem, 80vw); }
+.stage-picker select { max-width: min(24rem, 80vw); }
+.stage-bar select optgroup {
+  background: #182635;
+  color: #7dd3fc;
+  font-weight: 700;
+  font-style: normal;
+}
+.stage-bar select optgroup option {
+  background: #213147;
+  color: #f0f6ff;
+  font-weight: 400;
+}
 .stage-mode { display: flex; }
 .stage-mode button[aria-pressed=true] { background: #e4f3fd; color: #132333; }
 .stage-badge { margin-left: auto; padding: .25rem .65rem; border-radius: 1rem; font-weight: 750; color: #182639; background: #ffdb91; }
