@@ -6,6 +6,7 @@ import { CONTRACT_VERSION } from "./api/types";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { CustomerPage } from "./pages/customer/CustomerPage";
 import { OpsPage } from "./pages/ops/OpsPage";
+import { HomePage } from "./pages/home/HomePage";
 
 const PresenterStage = lazy(() => import("./pages/demo/stage/PresenterStage"));
 const DemoGatePage = lazy(() => import("./pages/demo/DemoGatePage"));
@@ -19,6 +20,9 @@ type AppProps =
 
 export function App(props: AppProps) {
   const path = window.location.pathname.replace(/\/$/, "");
+  if (path === "" || path === "/home") {
+    return <HomePage />;
+  }
   if (path === "/demo") {
     return <Suspense fallback={<main>Loading presenter stage…</main>}><PresenterStage /></Suspense>;
   }
