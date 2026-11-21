@@ -1,0 +1,30 @@
+services:
+  # AgentGate Unified Production Web Service
+  - type: web
+    name: agentgate
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /health/ready
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: AGENTGATE_PROFILE
+        value: real
+      - key: AGENTGATE_BANK_SERVICE_CREDENTIAL
+        generateValue: true
+      - key: AGENTGATE_HUMAN_SESSION_SECRET
+        generateValue: true
+      - key: AGENTGATE_DEV_CONTROL_CREDENTIAL
+        generateValue: true
+      - key: AGENTGATE_AUDIT_SIGNING_KEY_PATH
+        value: /app/runtime/audit.pem
+      - key: AGENTGATE_MANDATE_SIGNING_KEY_PATH
+        value: /app/runtime/mandate.pem
+      - key: AGENTGATE_TOKEN_SIGNING_KEY_PATH
+        value: /app/runtime/token.pem
+      - key: AGENTGATE_DISPUTE_TRUST_PATH
+        value: /app/runtime/trust.json
+      - key: AGENTGATE_GATEWAY_DB
+        value: /app/runtime/gateway.db
+      - key: AGENTGATE_BANK_DB
+        value: /app/runtime/bank.db
