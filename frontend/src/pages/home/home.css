@@ -75,3 +75,64 @@
 @media (prefers-reduced-motion: reduce) {
   .home-switch button { transition: none; }
 }
+
+/* Shared grid cells reserve the tallest option at the current viewport width. */
+.home-stack { display: grid; min-width: 0; }
+.home-layer { grid-area: 1 / 1; min-width: 0; }
+.home-layer[inert] { visibility: hidden; }
+
+.home-switch {
+  position: relative;
+  isolation: isolate;
+  grid-auto-columns: 1fr;
+  --pill-x: var(--index);
+  --pill-y: 0;
+  --pill-width: calc((100% - .5rem) / 4);
+  --pill-height: calc(100% - .5rem);
+}
+.home-pill {
+  position: absolute;
+  z-index: -1;
+  top: .25rem;
+  left: .25rem;
+  width: var(--pill-width);
+  height: var(--pill-height);
+  transform: translate(calc(var(--pill-x) * 100%), calc(var(--pill-y) * 100%));
+  border-radius: 2rem;
+  background: #47536b;
+  box-shadow: inset 0 0 0 1px var(--line);
+  pointer-events: none;
+}
+.home-switch button[aria-selected=true] { background: transparent; box-shadow: none; }
+@media (max-width: 34rem) {
+  .home-switch {
+    --pill-x: var(--column);
+    --pill-y: var(--row);
+    --pill-width: calc((100% - .5rem) / 2);
+    --pill-height: calc((100% - .5rem) / 2);
+    grid-auto-rows: 1fr;
+  }
+}
+@keyframes home-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes home-glow-drift {
+  from { transform: translateY(-8px); }
+  to { transform: translateY(8px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .home-pill { transition: transform 240ms cubic-bezier(.22, .75, .25, 1); }
+  .home-layer:not([inert]), .home-guide .home-revealed {
+    animation: home-enter 360ms cubic-bezier(.2, .75, .3, 1) backwards;
+  }
+  .home-hero[data-switched=true] .home-layer:not([inert]) { animation-duration: 200ms; }
+  @supports (animation-timeline: view()) {
+    .home-hero { view-timeline-name: --home-hero; }
+    .home-hero::before {
+      animation: home-glow-drift linear both;
+      animation-timeline: --home-hero;
+      animation-range: exit 0% exit 100%;
+    }
+  }
+}
