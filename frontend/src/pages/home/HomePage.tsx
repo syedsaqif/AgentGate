@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { CONTRACT_VERSION } from "../../api/types";
 import { pipeline } from "../demo/gateTimeline";
 import "./home.css";
+import { MandateScale, PaymentPath, Walkthrough } from "./Walkthrough";
 
 const destinations = [
   { name: "Presenter Stage", route: "/demo", title: "See how an AI payment gets approved.", description: "Follow a bill from BillPal’s first request through ten policy checks to its entry in the bank ledger.", preview: "Payment journey" },
@@ -18,14 +19,12 @@ function Preview({ destination }: { destination: Destination }) {
     {destination.route === "/demo" && <>
       <div className="home-amount">₹1,850<span>.00</span></div>
       <p className="home-payee">Electricity Board</p>
-      <ol className="home-flow">
-        <li><strong>BillPal</strong><span>Submits the payment request</span></li>
-        <li><strong>Policy pipeline</strong><span>Evaluates ten stages</span></li>
-        <li><strong>Bank ledger</strong><span>Records the approved payment</span></li>
-      </ol>
+      <PaymentPath />
+      <div className="home-ledger"><span>Bank ledger entry</span><strong>&#8377;1,850.00</strong></div>
     </>}
     {destination.route === "/demo/bank" && <>
       <div className="home-amount">₹5,000</div><p className="home-payee">Per-payment limit</p>
+      <MandateScale />
       <dl className="home-details">
         <div><dt>Agent</dt><dd>BillPal</dd></div>
         <div><dt>Allowed payee</dt><dd>Electricity Board</dd></div>
@@ -37,7 +36,7 @@ function Preview({ destination }: { destination: Destination }) {
       <div><strong>BillPal</strong><p>I’ll send the ₹1,850 request for Electricity Board to AgentGate to check it against your mandate.</p></div>
     </div>}
     {destination.route === "/demo/gate" && <ol className="home-stages">
-      {pipeline.map(([key, label], index) => <li key={key} className={key === "mandate" ? "home-stage-highlight" : undefined}><span>{String(index + 1).padStart(2, "0")}</span>{label}</li>)}
+      {pipeline.map(([key, label], index) => <li key={key} style={{ "--delay": (index * .14) + "s" } as CSSProperties} className={key === "mandate" ? "home-stage-highlight" : undefined}><span>{String(index + 1).padStart(2, "0")}</span>{label}</li>)}
     </ol>}
   </>;
 }
@@ -45,19 +44,17 @@ function Preview({ destination }: { destination: Destination }) {
 export function HomePage() {
   const [selection, setSelected] = useState<number | null>(null);
   const selected = selection ?? 0;
-  const guide = useRef<HTMLOListElement>(null);
-
+  const preview = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!guide.current || typeof IntersectionObserver === "undefined") return;
+    const panel = preview.current;
+    if (!panel || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(entries => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("home-revealed");
-          observer.unobserve(entry.target);
-        }
+      if (entries.some(entry => entry.isIntersecting)) {
+        panel.dataset.visible = "true";
+        observer.disconnect();
       }
-    });
-    for (const step of guide.current.children) observer.observe(step);
+    }, { threshold: .25 });
+    observer.observe(panel);
     return () => observer.disconnect();
   }, []);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
@@ -92,11 +89,11 @@ export function HomePage() {
           {destinations.map((destination, index) =>
             <div key={destination.route} className="home-copy home-layer" aria-hidden={selected !== index} inert={selected !== index}>
               <h1>{destination.title}</h1><p>{destination.description}</p>
-              <a className="home-action" href={destination.route}>Open {destination.name} <span aria-hidden="true">?</span></a>
+              <a className="home-action" href={destination.route}>Open {destination.name} <span aria-hidden="true">&rarr;</span></a>
             </div>
           )}
         </div>
-        <aside className="home-preview home-stack" aria-label={active.preview}>
+        <aside ref={preview} className="home-preview home-stack" aria-label={active.preview}>
           {destinations.map((destination, index) =>
             <div key={destination.route} className="home-layer" aria-hidden={selected !== index} inert={selected !== index}>
               <Preview destination={destination} />
@@ -104,14 +101,7 @@ export function HomePage() {
           )}
         </aside>
       </section>
-      <section className="home-guide" aria-labelledby="home-guide-title">
-        <h2 id="home-guide-title">How to Explore</h2>
-        <ol ref={guide}>
-          <li><strong>Set up a mandate</strong><p>Sign in to Demo Bank with PIN 4821 to adjust BillPal’s spending limits.</p></li>
-          <li><strong>Run a scenario</strong><p>In Presenter Stage, choose a normal payment or a security test and watch the checks unfold.</p></li>
-          <li><strong>Verify a receipt</strong><p>Download an executed payment’s QR code to verify its receipt offline.</p></li>
-        </ol>
-      </section>
+      <Walkthrough />
     </div>
   </main>;
 }
