@@ -15,4 +15,5 @@
 !frontend/vite.config.ts
 !frontend/index.html
 !frontend/src/**
+!frontend/verifier/dispute-verifier-v1.html
 **/__pycache__/
