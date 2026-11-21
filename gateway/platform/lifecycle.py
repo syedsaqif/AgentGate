@@ -116,10 +116,23 @@ class LifecycleCoordinator(Lifecycle):
         """Suspend an agent globally, revoke its tokens, and cancel approvals in ONE transaction."""
         event_to_publish: dict[str, Any] | None = None
 
+        audience: frozenset[str] = frozenset()
+        changed = False
         async with self.unit_of_work as tx:
             # 1. Update status in AgentRegistry
             if self.agent_registry is not None:
-                await self.agent_registry.set_status(agent_id, AgentStatus.SUSPENDED, tx)
+                transition = getattr(self.agent_registry, "set_status_returning_previous", None)
+                if transition is not None:
+                    previous = await transition(agent_id, AgentStatus.SUSPENDED, tx)
+                else:
+                    previous = (await self.agent_registry.get(agent_id)).status
+                    await self.agent_registry.set_status(agent_id, AgentStatus.SUSPENDED, tx)
+                changed = previous != AgentStatus.SUSPENDED
+                if changed and self.event_bus is not None:
+                    owners = await tx.session.scalars(select(MandateTable.customer_id).where(
+                        MandateTable.agent_id == agent_id, MandateTable.status == "ACTIVE"
+                    ).distinct())
+                    audience = frozenset(owners)
 
             # 2. Revoke all tokens for this agent
             if self.token_service is not None:
@@ -148,8 +161,9 @@ class LifecycleCoordinator(Lifecycle):
             }
 
         # Publish event strictly AFTER commit
-        if self.event_bus is not None and event_to_publish is not None:
-            await self.event_bus.publish("agent.suspended", event_to_publish)
+        if changed and self.event_bus is not None and event_to_publish is not None:
+            await self.event_bus.publish("agent.suspended", event_to_publish,
+                                         customer_audience=audience)
 
     async def suspend_customer_delegation(
         self,

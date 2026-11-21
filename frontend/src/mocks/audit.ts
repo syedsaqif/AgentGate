@@ -4,9 +4,10 @@ import {
 } from "../api/auditWire";
 
 const evidenceRoute = /^\/v1\/audit\/evidence\/([^/]+)$/;
+const proofRoute = /^\/v1\/audit\/proof\/([^/]+)$/;
 
 export function isAuditRoute(path: string) {
-  return path === auditEntriesPath || path === auditVerifyPath || evidenceRoute.test(path);
+  return path === auditEntriesPath || path === auditVerifyPath || evidenceRoute.test(path) || proofRoute.test(path);
 }
 
 const partial: VerifyReport = {
@@ -120,10 +121,17 @@ export function createAuditFixtures(verification: AuditVerificationFixture, empt
         items, next_cursor: selected.length > limit ? auditCursor(items[items.length - 1].seq) : null,
       } satisfies AuditPage);
     }
-    const match = evidenceRoute.exec(url.pathname);
+    const proof = proofRoute.exec(url.pathname);
+    const match = proof ?? evidenceRoute.exec(url.pathname);
     const selected = Object.values(evidenceFixtures).find((bundle) =>
       !empty && encodeURIComponent(bundle.request_id) === match?.[1]);
-    return selected ? respond(selected) : reject(404, "E_REQ_INVALID", "Audit evidence not found.");
+    if (!selected) return reject(404, "E_REQ_INVALID", "Audit evidence not found.");
+    if (!proof) return respond(selected);
+    const receipt = selected.audit_references[0];
+    return respond({
+      format: "agentgate-dispute-v1", fixture: true, record: { request_id: selected.request_id },
+      evidence: { receipt_seq: receipt.seq, receipt_hash: receipt.entry_hash }, witness_checkpoint: null,
+    });
   };
 }
 

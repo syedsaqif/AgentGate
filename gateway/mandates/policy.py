@@ -1,12 +1,14 @@
-"""Member A pure mandate policy evaluator."""
+﻿"""Member A pure mandate policy evaluator."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 try:
     from zoneinfo import ZoneInfo
+
     KOLKATA_TZ = ZoneInfo("Asia/Kolkata")
 except Exception:
     KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30), name="Asia/Kolkata")
@@ -14,7 +16,6 @@ except Exception:
 from contracts.common import ActionType, PolicyVerdict
 from contracts.core_models import (
     CanonicalAction,
-    Grant,
     MandateSnapshot,
     MandateStatus,
     PolicyResult,
@@ -82,210 +83,154 @@ class PolicyEvaluator:
         if resolved_action is None or resolved_snapshot is None or resolved_now is None:
             raise ValueError("action, snapshot/mandate, and now are required for policy evaluation")
 
-        terms = resolved_snapshot.terms
-        deny_reasons: list[str] = []
+        return evaluate_policy(
+            resolved_action,
+            resolved_snapshot,
+            resolved_usage,
+            resolved_now,
+            known_paid_payees or (),
+            resolved_auth,
+            kwargs.get('_check_observer'),
+        )
 
-        # -------------------------------------------------------------
-        # 1. Hard DENY: Mandate status
-        # -------------------------------------------------------------
-        status_str = str(resolved_snapshot.status).upper()
-        if status_str == MandateStatus.REVOKED.value:
-            deny_reasons.append(ReasonCode.E_MANDATE_REVOKED.value)
-        elif status_str == MandateStatus.SUSPENDED.value:
-            deny_reasons.append(ReasonCode.E_AUTH_AGENT_SUSPENDED.value)
-        elif status_str == MandateStatus.EXPIRED.value:
-            deny_reasons.append(ReasonCode.E_AUTH_EXPIRED.value)
-        elif status_str != MandateStatus.ACTIVE.value:
-            deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
 
-        # -------------------------------------------------------------
-        # 2. Hard DENY: Ownership & Binding verification
-        # -------------------------------------------------------------
-        if resolved_auth is not None:
-            if (
-                resolved_auth.customer_id != terms.customer_id
-                or resolved_auth.agent_id != terms.agent_id
-                or resolved_auth.mandate_id != terms.mandate_id
-                or resolved_auth.mandate_hash != resolved_snapshot.mandate_hash
+CheckObserver = Callable[[str, bool, bool, bool, int | None, dict[str, int]], None]
+
+
+def evaluate_policy(
+    action: CanonicalAction,
+    mandate: MandateSnapshot,
+    usage: tuple[UsageSnapshot, ...],
+    now: datetime,
+    known_paid_payees: Collection[str],
+    auth: AuthContext | None,
+    observe: CheckObserver | None = None,
+) -> PolicyResult:
+    """Apply the mandate in policy order, optionally reporting the same comparisons."""
+    terms = mandate.terms
+    reasons: list[str] = []
+    grant_index: int | None = None
+    soft = False
+
+    def check(
+        name: str, passed: bool, reason: str = ReasonCode.E_REQ_INVALID.value, **detail: int
+    ) -> None:
+        if observe is not None:
+            observe(name, passed, soft, not passed and not reasons, grant_index, detail)
+        if not passed and reason not in reasons:
+            reasons.append(reason)
+
+    status = str(mandate.status).upper()
+    status_reason = {
+        MandateStatus.REVOKED.value: ReasonCode.E_MANDATE_REVOKED,
+        MandateStatus.SUSPENDED.value: ReasonCode.E_AUTH_AGENT_SUSPENDED,
+        MandateStatus.EXPIRED.value: ReasonCode.E_AUTH_EXPIRED,
+    }.get(status, ReasonCode.E_REQ_INVALID)
+    check("mandate_status", status == MandateStatus.ACTIVE.value, status_reason.value)
+    binding = (terms.customer_id, terms.agent_id, terms.mandate_id, mandate.mandate_hash)
+    for name, subject in (("auth_binding", auth), ("action_binding", action)):
+        if subject is not None:
+            check(
+                name,
+                (subject.customer_id, subject.agent_id, subject.mandate_id, subject.mandate_hash)
+                == binding,
+                ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH.value,
+            )
+
+    check(
+        "validity",
+        terms.valid_from <= now < terms.valid_until,
+        ReasonCode.E_AUTH_EXPIRED.value
+        if now >= terms.valid_until
+        else ReasonCode.E_REQ_INVALID.value,
+    )
+    kind = _get_action_str(action.action_type)
+    grants = [g for g in terms.grants if _get_action_str(g.action) == kind]
+    check("action_grant", bool(grants))
+    money = kind in (ActionType.BILL_PAY.value, ActionType.TRANSFER.value)
+    read = kind in (ActionType.BALANCE_READ.value, ActionType.TRANSACTIONS_READ.value)
+    params = action.params
+    amount = params.amount_paise
+    if grants and money:
+        check("payment_parameters", params.currency == "INR" and amount > 0)
+    elif grants and read:
+        check("read_amount", amount == 0)
+
+    counters = {u.grant_id: u for u in usage if hasattr(u, "grant_id")}
+    for index, grant in enumerate(grants):
+        grant_index = index
+        check("account_allowlist", params.from_account in grant.account_ids)
+        if grant.time_window:
+            window = grant.time_window
+            local = now.astimezone(KOLKATA_TZ)
+            allowed = local.isoweekday() in window.weekdays
+            if allowed and (window.start_local, window.end_local) not in (
+                ("00:00", "23:59"),
+                ("00:00", "23:59:59"),
             ):
-                deny_reasons.append(ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH.value)
+                current = time(local.hour, local.minute, local.second)
+                start = time(*map(int, window.start_local.split(":")))
+                end = time(*map(int, window.end_local.split(":")))
+                allowed = start <= current < end
+            check("time_window", allowed)
 
-        if (
-            resolved_action.customer_id != terms.customer_id
-            or resolved_action.agent_id != terms.agent_id
-            or resolved_action.mandate_id != terms.mandate_id
-            or resolved_action.mandate_hash != resolved_snapshot.mandate_hash
-        ):
-            if ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH.value not in deny_reasons:
-                deny_reasons.append(ReasonCode.E_AUTH_AGENT_MANDATE_MISMATCH.value)
-
-        # -------------------------------------------------------------
-        # 3. Hard DENY: Validity window (valid_from <= now < valid_until)
-        # -------------------------------------------------------------
-        if resolved_now < terms.valid_from:
-            deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-        elif resolved_now >= terms.valid_until:
-            deny_reasons.append(ReasonCode.E_AUTH_EXPIRED.value)
-
-        # -------------------------------------------------------------
-        # 4. Action allow-list & Overlapping Grants (Intersection Rule)
-        # -------------------------------------------------------------
-        action_type_str = _get_action_str(resolved_action.action_type)
-        matching_grants: list[Grant] = [
-            g for g in terms.grants if _get_action_str(g.action) == action_type_str
-        ]
-
-        if not matching_grants:
-            deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-            return PolicyResult(
-                verdict=PolicyVerdict.DENY,
-                reason_codes=tuple(dict.fromkeys(deny_reasons)),
-                matched_grant_ids=(),
-                step_up_reasons=(),
-                usage_snapshot=resolved_usage,
+        prior = counters.get(grant.grant_id)
+        if money:
+            check("grant_currency", grant.currency == "INR")
+            check(
+                "payee_allowlist",
+                bool(params.payee_id and params.payee_id in grant.payee_ids),
+                ReasonCode.E_POLICY_PAYEE_NOT_ALLOWED.value,
+            )
+            if grant.max_per_txn_paise is not None:
+                check(
+                    "per_txn_cap",
+                    amount <= grant.max_per_txn_paise,
+                    requested_paise=amount,
+                    limit_paise=grant.max_per_txn_paise,
+                )
+            if grant.max_total_paise is not None:
+                total = amount + (prior.committed_paise + prior.reserved_paise if prior else 0)
+                check(
+                    "total_cap",
+                    total <= grant.max_total_paise,
+                    projected_paise=total,
+                    limit_paise=grant.max_total_paise,
+                )
+        if (money or read) and grant.max_count is not None:
+            count = 1 + (prior.committed_count + prior.reserved_count if prior else 0)
+            check(
+                "count_cap", count <= grant.max_count, projected_count=count, limit=grant.max_count
             )
 
-        matched_grant_ids = tuple(g.grant_id for g in matching_grants)
-
-        # Map existing usage by grant_id
-        usage_by_grant: dict[str, UsageSnapshot] = {
-            u.grant_id: u for u in resolved_usage if hasattr(u, "grant_id")
-        }
-
-        is_money_out = action_type_str in (
-            ActionType.BILL_PAY.value,
-            ActionType.TRANSFER.value,
-        )
-        is_read = action_type_str in (
-            ActionType.BALANCE_READ.value,
-            ActionType.TRANSACTIONS_READ.value,
-        )
-
-        amount_paise = resolved_action.params.amount_paise
-        currency = resolved_action.params.currency
-        from_acc = resolved_action.params.from_account
-        payee_id = resolved_action.params.payee_id
-
-        # Basic money-out parameter validation
-        if is_money_out:
-            if currency != "INR" or amount_paise <= 0:
-                deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-        elif is_read and amount_paise != 0:
-            deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-        # Enforce intersection across ALL matching grants
-        # (every matching grant must permit the action)
-        for grant in matching_grants:
-            # Account allow-list
-            if from_acc not in grant.account_ids:
-                deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-            # TimeWindow check (in Asia/Kolkata)
-            if grant.time_window:
-                now_kolkata = resolved_now.astimezone(KOLKATA_TZ)
-                # ISO weekday: Monday=1, Sunday=7
-                if now_kolkata.isoweekday() not in grant.time_window.weekdays:
-                    deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-                elif not (
-                    grant.time_window.start_local == "00:00"
-                    and grant.time_window.end_local in ("23:59", "23:59:59")
-                ):
-                    cur_t = time(now_kolkata.hour, now_kolkata.minute, now_kolkata.second)
-                    start_h, start_m = map(int, grant.time_window.start_local.split(":"))
-                    end_h, end_m = map(int, grant.time_window.end_local.split(":"))
-                    start_t = time(start_h, start_m, 0)
-                    end_t = time(end_h, end_m, 0)
-                    # start inclusive, end exclusive
-                    if cur_t < start_t or cur_t >= end_t:
-                        deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-            # Usage counters for this grant
-            u_snap = usage_by_grant.get(grant.grant_id)
-            committed_paise = u_snap.committed_paise if u_snap else 0
-            reserved_paise = u_snap.reserved_paise if u_snap else 0
-            committed_count = u_snap.committed_count if u_snap else 0
-            reserved_count = u_snap.reserved_count if u_snap else 0
-
-            if is_money_out:
-                if grant.currency != "INR":
-                    deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-                # Payee allow-list check: unlisted payee is a hard DENY
-                if not payee_id or payee_id not in grant.payee_ids:
-                    deny_reasons.append(ReasonCode.E_POLICY_PAYEE_NOT_ALLOWED.value)
-
-                # Per-transaction cap
-                if grant.max_per_txn_paise is not None and amount_paise > grant.max_per_txn_paise:
-                    deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-                # Cumulative total cap
-                if grant.max_total_paise is not None:
-                    if committed_paise + reserved_paise + amount_paise > grant.max_total_paise:
-                        deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-                # Count cap
-                if grant.max_count is not None:
-                    if committed_count + reserved_count + 1 > grant.max_count:
-                        deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-            elif is_read:
-                # Count cap for reads if specified
-                if grant.max_count is not None:
-                    if committed_count + reserved_count + 1 > grant.max_count:
-                        deny_reasons.append(ReasonCode.E_REQ_INVALID.value)
-
-        # If any hard DENY reason was triggered, return DENY immediately
-        # (Hard DENY ALWAYS beats STEP_UP)
-        if deny_reasons:
-            return PolicyResult(
-                verdict=PolicyVerdict.DENY,
-                reason_codes=tuple(dict.fromkeys(deny_reasons)),
-                matched_grant_ids=matched_grant_ids,
-                step_up_reasons=(),
-                usage_snapshot=resolved_usage,
+    grant_index = None
+    if reasons:
+        verdict = PolicyVerdict.DENY
+    else:
+        soft = True
+        rules = terms.step_up
+        if money and rules.amount_above_paise is not None:
+            check(
+                "amount_above_threshold",
+                amount <= rules.amount_above_paise,
+                "amount_above_threshold",
+                requested_paise=amount,
+                threshold_paise=rules.amount_above_paise,
             )
-
-        # -------------------------------------------------------------
-        # 5. Soft STEP_UP Rules (Only if NO hard DENY)
-        # -------------------------------------------------------------
-        step_up_reasons: list[str] = []
-        step_up = terms.step_up
-
-        if is_money_out:
-            # 5a. Amount above threshold
-            if (
-                step_up.amount_above_paise is not None
-                and amount_paise > step_up.amount_above_paise
-            ):
-                step_up_reasons.append("amount_above_threshold")
-
-            # 5b. New payee approval (for allow-listed payees never paid before)
-            if step_up.new_payee_requires_approval and payee_id:
-                paid_set = set(known_paid_payees) if known_paid_payees else set()
-                if payee_id not in paid_set:
-                    step_up_reasons.append("new_payee")
-
-        # 5c. Always ask actions
-        always_ask = [_get_action_str(a) for a in step_up.always_ask_actions]
-        if action_type_str in always_ask:
-            step_up_reasons.append("always_ask_action")
-
-        if step_up_reasons:
-            return PolicyResult(
-                verdict=PolicyVerdict.STEP_UP,
-                reason_codes=tuple(dict.fromkeys(step_up_reasons)),
-                matched_grant_ids=matched_grant_ids,
-                step_up_reasons=tuple(dict.fromkeys(step_up_reasons)),
-                usage_snapshot=resolved_usage,
+        if money and rules.new_payee_requires_approval and params.payee_id:
+            check("new_payee", params.payee_id in known_paid_payees, "new_payee")
+        if rules.always_ask_actions:
+            check(
+                "always_ask_action",
+                kind not in map(_get_action_str, rules.always_ask_actions),
+                "always_ask_action",
             )
+        verdict = PolicyVerdict.STEP_UP if reasons else PolicyVerdict.ALLOW
 
-        # -------------------------------------------------------------
-        # 6. All checks passed: ALLOW
-        # -------------------------------------------------------------
-        return PolicyResult(
-            verdict=PolicyVerdict.ALLOW,
-            reason_codes=("ALLOW",),
-            matched_grant_ids=matched_grant_ids,
-            step_up_reasons=(),
-            usage_snapshot=resolved_usage,
-        )
+    return PolicyResult(
+        verdict=verdict,
+        reason_codes=tuple(reasons) or ("ALLOW",),
+        matched_grant_ids=tuple(g.grant_id for g in grants),
+        step_up_reasons=tuple(reasons) if soft else (),
+        usage_snapshot=usage,
+    )

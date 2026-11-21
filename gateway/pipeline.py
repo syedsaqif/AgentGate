@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from time import perf_counter_ns
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 from contracts.audit_models import AuditEvent, SignedRequestEvidence
 from contracts.canonical import action_hash, sha256_base64url
@@ -31,8 +33,13 @@ from contracts.identity_models import AgentPublicIdentity, AgentStatus, AuthCont
 from contracts.reason_codes import HTTP_STATUS_BY_CODE, ReasonCode
 from contracts.risk_models import HistorySnapshot, RiskInput, RiskResult
 from gateway.audit.evidence import build_request_evidence_payload
+from gateway.demo_trace import PolicyCheck, observe_checks
 from gateway.deps import Dependencies
 from gateway.errors import AgentGateError, get_or_create_request_id
+from gateway.events.trace import SIGNALS, GateTrace
+from gateway.executor.schema import ActionTable
+from gateway.mandates.policy import PolicyEvaluator
+from gateway.mandates.routes import get_current_customer
 
 router = APIRouter(prefix="/v1", tags=["agent"])
 
@@ -142,6 +149,22 @@ async def process_money_action(
     deps = get_dependencies(request)
     request_id = get_or_create_request_id(request)
 
+    trace = GateTrace(deps.event_bus, request_id)
+    try:
+        return await _process_money(request, action_type, deps, request_id, trace)
+    except Exception as exc:
+        if not trace.finished:
+            trace.failure(exc)
+            trace.skip_remaining()
+        raise
+    finally:
+        await trace.flush()
+
+
+async def _process_money(
+    request: Request, action_type: ActionType, deps: Dependencies,
+    request_id: str, trace: GateTrace,
+) -> JSONResponse:
     # 1. Edge: Validate Idempotency-Key header and raw request body
     idempotency_key = (
         request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key")
@@ -154,6 +177,8 @@ async def process_money_action(
         )
     idempotency_key = idempotency_key.strip()
 
+    trace.row("pass")
+    trace.enter("edge", "request_body")
     raw_bytes = await request.body()
     if not raw_bytes:
         raise AgentGateError(
@@ -172,8 +197,13 @@ async def process_money_action(
         ) from exc
 
     # 2. Identity: Authenticate cryptographic proof and DPoP token
+    trace.row("pass")
+    trace.enter("identity", "authenticate_agent")
+    started = perf_counter_ns()
     auth_ctx = await authenticate_agent(request, raw_bytes, deps)
 
+    trace.row("pass", elapsed_ns=perf_counter_ns() - started)
+    trace.enter("registry", "agent_status")
     # Check agent status in AgentRegistry if configured
     agent_pub: AgentPublicIdentity | None = None
     if deps.agent_registry is not None:
@@ -191,10 +221,14 @@ async def process_money_action(
                     message=f"Agent '{auth_ctx.agent_id}' is disabled",
                     status_code=403,
                 )
+            trace.row("pass")
         except AgentGateError:
             raise
         except Exception:
-            pass
+            trace.row("warn")
+    else:
+        trace.row("skip")
+    trace.enter("canonical", "build_action")
 
     # 3. Action Store: Construct canonical action from trusted identity bindings
     canonical_action = CanonicalAction(
@@ -220,6 +254,8 @@ async def process_money_action(
         received_at=deps.clock.now(),
     )
 
+    trace.row("pass")
+    trace.enter("idempotency", "claim")
     # 4. Idempotency claim and deduplication check
     exec_srv = getattr(deps, "execution_service", None)
     if exec_srv is not None:
@@ -228,7 +264,14 @@ async def process_money_action(
             path=request.url.path,
             action=canonical_action,
         )
+        trace.row("pass", new=is_new)
         if not is_new:
+            if record.status in (ActionStatus.EXECUTED, ActionStatus.PENDING_APPROVAL,
+                                 ActionStatus.EXECUTION_UNKNOWN, ActionStatus.REJECTED,
+                                 ActionStatus.FAILED):
+                trace.enter("idempotency", "stored_result")
+                trace.row("info", outcome=str(record.status))
+                trace.skip_remaining()
             # Replay existing result
             if record.status == ActionStatus.EXECUTED.value:
                 exec_result = await deps.execution_port.execute_stored(record.request_id)
@@ -263,6 +306,9 @@ async def process_money_action(
                     status_code=403,
                 )
 
+    else:
+        trace.row("skip")
+    trace.enter("mandate", "active_binding")
     # 5. Mandate Snapshot & Pure Policy Evaluation
     if deps.mandate_reader is None or deps.usage_reader is None or deps.policy_evaluator is None:
         raise AgentGateError(
@@ -297,6 +343,8 @@ async def process_money_action(
         )
 
     # 5. History snapshot & Pure Policy Evaluation
+    trace.row("pass")
+    trace.enter("policy", "evaluate")
     history_snap = HistorySnapshot()
     history_store = getattr(deps.risk_engine, "history_store", None)
     if history_store is not None and hasattr(history_store, "get_history_snapshot"):
@@ -307,14 +355,25 @@ async def process_money_action(
         )
 
     usage_snapshots = await deps.usage_reader.get(canonical_action.mandate_id)
+    def policy_check(row: PolicyCheck) -> None:
+        trace.enter("policy", row.check)
+        trace.row(row.status, decisive=row.decisive, grant_index=row.grant_index, **row.detail)
+
+    observer = {}
+    if type(deps.policy_evaluator) is PolicyEvaluator and trace.bus is not None:
+        observer["_check_observer"] = observe_checks(policy_check)
     policy_result = deps.policy_evaluator.evaluate(
         action=canonical_action,
         mandate=snapshot,
-        usages=usage_snapshots,
+        usage=usage_snapshots,
         now=deps.clock.now(),
         known_paid_payees=history_snap.previously_paid_payees,
+        **observer,
     )
 
+    trace.enter("policy", "verdict")
+    trace.row("info", verdict=str(policy_result.verdict))
+    trace.enter("risk", "score")
     # 6. Risk Engine scoring & attempt recording
     # Section 7.1: Always record & score attempt, even on hard policy DENY
     risk_input = RiskInput(
@@ -334,9 +393,12 @@ async def process_money_action(
             status_code=503,
         )
 
+    score_started = perf_counter_ns()
+    used_fallback = False
     try:
         risk_result: RiskResult = deps.risk_engine.score(risk_input)
     except Exception:
+        used_fallback = True
         # Fallback per Section 7.1: score 50, explicit escalation, never downgrades DENY
         risk_result = RiskResult(
             score=50,
@@ -348,6 +410,14 @@ async def process_money_action(
             model_version="fallback_v1",
         )
 
+    scoring_ns = perf_counter_ns() - score_started
+    for signal in risk_result.signals:
+        trace.enter("risk", signal.name if signal.name in SIGNALS else "signal")
+        trace.row("info", severity=signal.severity, weight=signal.weight)
+    trace.enter("risk", "score")
+    trace.row("warn" if used_fallback else "info", score=risk_result.score,
+              band=str(risk_result.level), elapsed_ns=scoring_ns, fallback=used_fallback)
+    trace.enter("risk", "record_attempt")
     if deps.unit_of_work is not None:
         async with deps.unit_of_work as tx:
             await deps.risk_engine.record_attempt(risk_input, tx)
@@ -382,15 +452,23 @@ async def process_money_action(
     else:
         final_decision = FinalDecision.ALLOW
 
+    trace.enter("breaker", "recommendation")
+    trace.row("warn" if risk_result.breaker_recommended else "pass",
+              recommended=risk_result.breaker_recommended)
     # 8. Breaker Triggered Handling: Atomic agent suspension
     if risk_result.breaker_recommended and deps.lifecycle is not None:
         reasons = risk_result.breaker_reasons or (ReasonCode.E_RISK_BREAKER_OPEN.value,)
+        trace.enter("breaker", "suspend_agent")
         await deps.lifecycle.suspend_agent(
             canonical_action.agent_id,
             reason_codes=tuple(reasons),
             reason="Circuit breaker triggered by risk engine",
         )
 
+        trace.row("info")
+    trace.enter("decision", "final_decision")
+    trace.row("info", verdict=final_decision.value)
+    trace.enter("decision", "write_ahead_audit")
     # 9. Pre-dispatch Write-Ahead Audit
     if deps.audit_log is None:
         raise AgentGateError(
@@ -453,6 +531,7 @@ async def process_money_action(
             status_code=503,
         ) from audit_exc
 
+    trace.row("pass")
     if deps.event_bus is not None:
         await deps.event_bus.publish(
             audit_event.event_type,
@@ -468,6 +547,8 @@ async def process_money_action(
 
     # 10. Final Decision Branching
     if final_decision == FinalDecision.ALLOW:
+        trace.enter("execution", "execute_stored")
+        await trace.flush()
         if deps.execution_port is None:
             raise AgentGateError(
                 code=ReasonCode.E_SERVICE_UNAVAILABLE,
@@ -477,6 +558,9 @@ async def process_money_action(
 
         exec_res = await deps.execution_port.execute_stored(canonical_action.request_id)
 
+        trace.enter("execution", "outcome")
+        trace.row("info", outcome=str(exec_res.status))
+        trace.finished = True
         # Adapters without this bus rely on the pipeline to publish the receipt.
         if (
             deps.event_bus is not None
@@ -491,6 +575,9 @@ async def process_money_action(
                     "request_id": canonical_action.request_id,
                     "customer_id": canonical_action.customer_id,
                     "agent_id": canonical_action.agent_id,
+                    "from_account": canonical_action.params.from_account,
+                    "amount_paise": canonical_action.params.amount_paise,
+                    "payee_id": canonical_action.params.payee_id,
                     "bank_operation_id": exec_res.bank_result.bank_operation_id,
                     "audit_ref": exec_res.audit_ref.model_dump(mode="json")
                     if exec_res.audit_ref
@@ -526,6 +613,8 @@ async def process_money_action(
         )
 
     if final_decision == FinalDecision.ESCALATE:
+        trace.enter("decision", "create_escalation")
+        await trace.flush()
         if deps.escalation_service is None:
             raise AgentGateError(
                 code=ReasonCode.E_SERVICE_UNAVAILABLE,
@@ -562,6 +651,10 @@ async def process_money_action(
                 status_code=422,
             ) from v_err
 
+        trace.row("pass")
+        trace.enter("execution", "awaiting_approval")
+        trace.row("info")
+        await trace.flush()
         if deps.event_bus is not None:
             await deps.event_bus.publish(
                 "escalation.created",
@@ -570,6 +663,7 @@ async def process_money_action(
                     "escalation_id": esc.escalation_id,
                     "customer_id": canonical_action.customer_id,
                     "agent_id": canonical_action.agent_id,
+                    "from_account": canonical_action.params.from_account,
                     "status": "PENDING_APPROVAL",
                 },
             )
@@ -587,6 +681,7 @@ async def process_money_action(
             },
         )
 
+    trace.enter('decision', 'reject')
     # final_decision == FinalDecision.DENY
     if deps.unit_of_work is not None:
         async with deps.unit_of_work as tx:
@@ -604,11 +699,14 @@ async def process_money_action(
                 "request_id": canonical_action.request_id,
                 "customer_id": canonical_action.customer_id,
                 "agent_id": canonical_action.agent_id,
+                "from_account": canonical_action.params.from_account,
                 "reason_code": deny_code,
                 "status": "REJECTED",
             },
         )
 
+    trace.row("info", reason_code=deny_code if deny_code in ReasonCode.__members__ else None)
+    trace.skip_remaining()
     raise AgentGateError(
         code=deny_code or ReasonCode.E_POLICY_PAYEE_NOT_ALLOWED,
         message="Payment request denied",
@@ -1054,8 +1152,33 @@ async def get_action_status(request_id: str, request: Request) -> JSONResponse:
             "customer_id": rec.customer_id,
             "agent_id": rec.agent_id,
             "action_type": rec.action_type,
+            "from_account": CanonicalAction.model_validate_json(
+                rec.canonical_json
+            ).params.from_account,
             "escalation_id": rec.escalation_id,
             "bank_result": bank_result,
             "audit_ref": audit_ref,
         },
     )
+
+
+@router.get("/customer/payment-receipts", include_in_schema=False)
+async def list_payment_receipts(
+    request: Request, customer: Annotated[str, Depends(get_current_customer)],
+) -> dict[str, Any]:
+    """Return recent executed money actions for the authenticated customer."""
+    factory = request.app.state.session_factory
+    async with factory() as session:
+        result = await session.scalars(
+            select(ActionTable).where(
+                ActionTable.customer_id == customer,
+                ActionTable.status == ActionStatus.EXECUTED.value,
+                ActionTable.action_type.in_((ActionType.BILL_PAY.value, ActionType.TRANSFER.value)),
+            ).order_by(ActionTable.updated_at.desc(), ActionTable.request_id.desc()).limit(50)
+        )
+        actions = [CanonicalAction.model_validate_json(row.canonical_json) for row in result]
+    return {"items": [
+        {"request_id": action.request_id, "from_account": action.params.from_account,
+         "payee_id": action.params.payee_id, "amount_paise": action.params.amount_paise}
+        for action in actions
+    ]}

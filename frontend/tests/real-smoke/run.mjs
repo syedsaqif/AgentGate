@@ -2,7 +2,7 @@ import { deepStrictEqual } from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { createServer } from "vite";
-import { downloadAndCheck, verifierHost } from "./dispute.mjs";
+import { checkReceiptQr, downloadAndCheck, verifierHost } from "./dispute.mjs";
 import { disposableStack, frontend, requireResult, SmokeFailure } from "./stack.mjs";
 
 // This is an explicit integration gate. Never echo browser errors, bodies, headers or secrets.
@@ -93,6 +93,7 @@ async function run() {
     process.env.VITE_GATEWAY_ORIGIN = stack.gateway;
     verifier = await verifierHost(await stack.verifierTls());
     process.env.VITE_DISPUTE_VERIFIER_URL = verifier.url;
+    process.env.VITE_DEMO_BANK_ORIGIN = stack.demo;
     vite = await createServer({ root: frontend, mode: "real", logLevel: "silent", server: { host: "127.0.0.1", port: 0, open: false } });
     await vite.listen();
     browser = await chromium.launch();
@@ -244,11 +245,40 @@ async function run() {
       "persisted bank operation, debit or balance disagreed with the approved payment");
       console.log(`Bank operation ${publicId(operation.bank_operation_id)}; ledger entry ${publicId(debits[0].entry_id)}; balance ${opening.balance} → ${balance} paise`);
     }, !!(opening && bundle));
-    await step("witness-backed Ops proof verifies offline from QR and local HTML", async () => {
+    await step("witness-backed ZIP and Ops and Demo Bank QR downloads", async () => {
       const response = await fetch(stack.gateway + "/v1/audit/proof/" + payment.request);
       requireResult(response.status === 401, "Dispute export must require Ops authentication.");
-      const witness = await stack.witness();
-      await downloadAndCheck({ ops, browser, host: verifier, witness, payment, receipt });
+      await stack.startDemo(origin, verifier.url);
+      const context = await browser.newContext();
+      try {
+        const bankPage = await context.newPage();
+        bankPage.setDefaultTimeout(10_000);
+        await bankPage.goto(origin + "/demo/bank");
+        await bankPage.getByLabel("Customer PIN").fill(pin);
+        await button(bankPage, "Sign in").click();
+        await bankPage.getByText("Live updates", { exact: true }).waitFor();
+        for (const name of ["Mandates", "Write a mandate", "Use example", "Parse terms", "Review mandate"]) {
+          await button(bankPage, name).click();
+        }
+        await bankPage.getByLabel("Confirmation PIN").fill(pin);
+        await button(bankPage, "Sign mandate").click();
+        const active = bankPage.locator("[data-mandate-id]").filter({ hasText: "Active" });
+        const activeMandate = await active.getAttribute("data-mandate-id");
+        await button(bankPage, "Home").click();
+        const n1 = await stack.pay(activeMandate, 185000);
+        const witness = await stack.witness();
+        await downloadAndCheck({ ops, browser, host: verifier, witness, payment, receipt });
+        await checkReceiptQr(ops, button(ops, "Download QR code"), verifier.url, payment.request, true, witness.checkpoint.seq);
+        const paid = bankPage.getByRole("region", { name: "Notifications" }).getByRole("listitem")
+          .filter({ hasText: /paid .*1,850\.00/ });
+        await checkReceiptQr(bankPage, button(paid, "Download QR code"), verifier.url, n1.request_id, false, witness.checkpoint.seq);
+        await bankPage.reload();
+        const row = bankPage.getByRole("region", { name: "Payment receipts" }).getByRole("listitem")
+          .filter({ hasText: n1.request_id });
+        await checkReceiptQr(bankPage, button(row, "Download QR code"), verifier.url, n1.request_id, false, witness.checkpoint.seq);
+      } finally {
+        await context.close();
+      }
     }, !!(opening && bundle && receipt));
     await step("Ops suspend and reinstate through refreshed registry state", async () => {
       const agent = ops.getByRole("listitem").filter({ has: ops.getByText("agt_billpal", { exact: true }) });

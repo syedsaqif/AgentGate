@@ -36,6 +36,24 @@ uv run python -m agent_sdk.cli pay-bill --gateway-url http://127.0.0.1:8000 --ag
 
 Refresh the Customer inbox. Approve the matching pending request once, then compare the receipt sequence and hash with Ops evidence for that request. Verify the audit chain, download the evidence JSON and revoke the mandate. Stop both services with Ctrl+C. Starting the launcher again creates fresh state.
 
+## Payment gate demo
+
+Open `http://127.0.0.1:5173/demo/gate`. The default stream is the local demo relay at `http://127.0.0.1:8002/demo/gate/stream`. Set `VITE_DEMO_GATE_STREAM_URL` before starting Vite if the relay uses another address. Start the relay and a gateway with the Phase 1 `gate.step` producer, then open the page before submitting the payment. Use the request selector to revisit interleaved requests or open the route with `?request_id=<id>` to follow one request.
+
+The **Trace source** menu also works with the services stopped. Routine payment, customer approval, and policy denial with suspension were captured from a disposable real-profile stack with a seeded bank and signed SDK requests. The cap denial comes from the Phase 1 redacted sample. Identity rejection is labeled as a fixture and reproduces the checks in Phase 1's `test_identity_trace_stops_at_aggregate`.
+
+## Demo Bank
+
+With the demo stack and Vite running, open `http://127.0.0.1:5173/demo/bank`. Sign in as `cust_001` with the PIN chosen when you started the stack. For a different demo server port, set `VITE_DEMO_BANK_ORIGIN` before starting Vite. Use the same loopback hostname for both services so the browser can use the demo session cookie.
+
+Go to **Mandates** → **Write a mandate** → **Use example** → **Parse terms**. Review or edit the fields, then sign with the Customer PIN. Approvals and recent bank transactions are on **Home**.
+
+## Payment assistant
+
+Open `http://127.0.0.1:5173/demo/agent` with the demo backend running. For another backend address, set `VITE_DEMO_AGENT_ORIGIN` before starting Vite. The Test lab loads the backend catalogue. **Use prompt** opens an editable draft. **Run** starts the selected scenario. Identity and integrity fixtures open as read-only results.
+
+Run a successful bill payment before P6. The retry uses that bill's original payload and idempotency key. Reopening a chat reads the existing run. A soft reset signs out the demo bank and clears the retry cache while retaining balances, ledger entries and risk history.
+
 ## Automated acceptance
 
 ```powershell

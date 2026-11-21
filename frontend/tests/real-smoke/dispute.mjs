@@ -13,6 +13,36 @@ const filename = "dispute-verifier-v1.html";
 const anchored = "Verified against external witness";
 const failed = "Verification failed";
 
+export async function checkReceiptQr(page, trigger, url, requestId, ops, coverage) {
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Verify this payment offline" });
+  await dialog.getByRole("img", { name: "QR code that opens the AgentGate dispute verifier" }).waitFor();
+  requireResult((await dialog.innerText()).includes(requestId), "QR dialog showed the wrong receipt.");
+  requireResult(await dialog.getByText("External witness checkpoint included through sequence " + coverage, { exact: true }).count() === 1,
+    "QR dialog did not show the actual witness coverage.");
+  requireResult(await dialog.getByRole("button", { name: "Download full proof ZIP" }).count() === Number(ops),
+    "Only Ops should offer the full proof archive.");
+  const saving = page.waitForEvent("download");
+  await dialog.getByRole("link", { name: "Save PNG" }).click();
+  const download = await saving;
+  const { width, height, data } = PNG.sync.read(await readFile(await download.path()));
+  requireResult(width === 512 && height === 512 && jsQR(new Uint8ClampedArray(data), width, height)?.data === url,
+    "Downloaded 512px QR must encode exactly the configured verifier URL.");
+  if (ops) {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await dialog.getByRole("button", { name: "Copy link" }).click();
+    await dialog.getByText("Verifier link copied.").waitFor();
+    requireResult(await page.evaluate(() => navigator.clipboard.readText()) === url, "Copy link copied the wrong URL.");
+    await page.emulateMedia({ media: "print" });
+    requireResult(await dialog.locator(".qr-content").isVisible() && !await dialog.locator(".qr-actions").isVisible()
+      && !await page.locator("main").isVisible(), "Print must show only the receipt dialog content.");
+    await page.emulateMedia({ media: "screen" });
+  }
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  requireResult(await trigger.evaluate(node => node === document.activeElement), "QR close did not return focus.");
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
   if (value !== null && typeof value === "object") {
@@ -70,7 +100,7 @@ export async function downloadAndCheck({ ops, browser, host, witness, payment, r
   requireResult(qrBytes, "Printable receipt QR missing.");
   const { data, width, height } = PNG.sync.read(Buffer.from(qrBytes, "base64"));
   const decoded = jsQR(new Uint8ClampedArray(data), width, height)?.data;
-  requireResult(decoded === host.url, "The QR must contain only the versioned HTTPS verifier URL.");
+  requireResult(width === 360 && height === 360 && decoded === host.url, "The 360px ZIP QR must contain only the verifier URL.");
   const fingerprint = createHash("sha256").update(witness.trust).digest("hex");
   const trust = JSON.parse(witness.trust);
   const localFile = path.join(witness.dir, filename);

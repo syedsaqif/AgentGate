@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import perf_counter_ns
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -22,6 +23,7 @@ from contracts.core_ports import BankClient, ExecutionPort, MandateReader
 from contracts.reason_codes import ReasonCode
 from gateway.audit.dispute import payment_disclosure
 from gateway.errors import AgentGateError
+from gateway.events.trace import GateTrace
 from gateway.executor.actions import ActionStore
 from gateway.executor.idempotency import (
     claim_idempotency,
@@ -204,6 +206,11 @@ class ExecutionService(ExecutionPort):
             res_id = reservation.reservation_id
 
         # -------------------------------------------------------------
+        trace = GateTrace(self.event_bus, request_id)
+        trace.enter("execution", "reservation_and_dispatch_audit_committed")
+        trace.row("pass")
+        await trace.flush()
+        bank_started = perf_counter_ns()
         # Phase 2: Outside SQLite writer lock -> network call to BankClient
         # -------------------------------------------------------------
         act_str = _get_action_str(action.action_type)
@@ -219,6 +226,9 @@ class ExecutionService(ExecutionPort):
             )
 
         # -------------------------------------------------------------
+        trace.enter("execution", "bank_response")
+        trace.row("info", outcome=str(bank_res.status), elapsed_ns=perf_counter_ns() - bank_started)
+        await trace.flush()
         # Phase 3: Completion transaction
         # -------------------------------------------------------------
         async with self.unit_of_work as tx:
@@ -314,6 +324,10 @@ class ExecutionService(ExecutionPort):
                     "customer_id": action.customer_id,
                     "agent_id": action.agent_id,
                     "status": "EXECUTED",
+                    "from_account": action.params.from_account,
+                    "amount_paise": action.params.amount_paise,
+                    "payee_id": action.params.payee_id,
+                    "bank_operation_id": bank_res.bank_operation_id,
                     "audit_ref": final_audit.model_dump(mode="json"),
                 },
             )

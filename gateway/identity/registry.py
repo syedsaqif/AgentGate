@@ -203,6 +203,12 @@ class SqlAgentRegistry:
     async def set_status(self, agent_id: OpaqueId, status: AgentStatus, tx: Tx) -> None:
         """Update agent status inside the caller-owned transaction without committing `tx`."""
 
+        await self.set_status_returning_previous(agent_id, status, tx)
+
+    async def set_status_returning_previous(
+        self, agent_id: OpaqueId, status: AgentStatus, tx: Tx
+    ) -> AgentStatus:
+        """Read and update under the same SQLite writer transaction."""
         resolved_status = AgentStatus(status)
         now_iso = format_utc_timestamp(self._clock.now())
         async with session_scope(self._session_factory, tx, write=True) as session:
@@ -211,9 +217,12 @@ class SqlAgentRegistry:
                 raise ResourceNotFoundError(
                     "Agent not found.", internal_reason="agent_not_found"
                 )
+            previous = AgentStatus(record.status)
             record.status = resolved_status.value
             record.updated_at = now_iso
             await maybe_await(session.flush())
+
+            return previous
 
     async def list_public(self, tx: Tx | None = None) -> tuple[AgentPublicIdentity, ...]:
         """Return all registered agents ordered stably by `agent_id`."""

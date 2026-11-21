@@ -116,52 +116,167 @@ def run_service(owner: str, profile: str, host: str = "127.0.0.1", port: int = 8
         print(f"Service for owner '{owner}' is reserved for that track's roadmap tasks.")
 
 
-def run_stack(
-    profile: str, host: str = "127.0.0.1", port: int = 8000, bank_port: int = 8001
+def _wait_for_service(
+    client: httpx.Client,
+    url: str,
+    proc: subprocess.Popen[Any],
+    name: str,
+    validator: Any = None,
+    attempts: int = 80,
+    delay: float = 0.125,
 ) -> None:
-    """Start the simulated bank first, then the gateway using the same local configuration."""
+    for _ in range(attempts):
+        if proc.poll() is not None:
+            raise SystemExit(
+                f"The {name} process exited during startup with code {proc.returncode}."
+            )
+        try:
+            resp = client.get(url)
+            if resp.is_success and (validator is None or validator(resp)):
+                return
+        except (httpx.TransportError, ValueError):
+            pass
+        time.sleep(delay)
+    raise SystemExit(f"The {name} did not become ready at {url}.")
+
+
+def run_stack(
+    profile: str,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    bank_port: int = 8001,
+    demo_port: int = 8002,
+    include_demo: bool = True,
+) -> None:
+    """Start the simulated bank, gateway, and demo backend using the same configuration."""
     os.environ["AGENTGATE_PROFILE"] = profile
     os.environ["AGENTGATE_GATEWAY_ORIGIN"] = f"http://{host}:{port}"
     os.environ["AGENTGATE_BANK_ORIGIN"] = f"http://127.0.0.1:{bank_port}"
+    os.environ["DEMO_PORT"] = str(demo_port)
     config = AgentGateConfig.load(profile=profile)
     if profile == "real" and not config.bank_service_credential:
         raise SystemExit("Set AGENTGATE_BANK_SERVICE_CREDENTIAL before starting the real stack.")
 
-    print(f"Gateway readiness ({profile}): {config.gateway_origin}/health/ready", flush=True)
-    bank_cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "bank_mock.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(bank_port),
-        "--log-level",
-        "info",
-    ]
-    bank_proc = subprocess.Popen(bank_cmd)
+    procs: dict[str, subprocess.Popen[Any]] = {}
+
     try:
+        # 1. Start simulated bank
+        print(f"Starting simulated bank on http://127.0.0.1:{bank_port}...", flush=True)
+        bank_cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "bank_mock.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(bank_port),
+            "--log-level",
+            "info",
+        ]
+        bank_proc = subprocess.Popen(bank_cmd)
+        procs["bank"] = bank_proc
+
         with httpx.Client(timeout=0.5, trust_env=False) as client:
-            for _ in range(80):
-                if bank_proc.poll() is not None:
-                    raise SystemExit("The simulated bank exited during startup.")
-                try:
-                    ready = client.get(f"{config.bank_origin}/openapi.json")
-                    if ready.is_success and ready.json().get("info", {}).get("title") == (
-                        "AgentGate Mock Bank"
-                    ):
-                        break
-                except (httpx.TransportError, ValueError):
-                    pass
-                time.sleep(0.125)
-            else:
-                raise SystemExit("The simulated bank did not become ready.")
-        uvicorn.run("gateway.main:app", host=host, port=port, log_level="info")
+            _wait_for_service(
+                client,
+                f"{config.bank_origin}/openapi.json",
+                bank_proc,
+                "simulated bank",
+                validator=lambda r: r.json().get("info", {}).get("title") == "AgentGate Mock Bank",
+            )
+            print("Simulated bank is ready.", flush=True)
+
+            # 2. Start gateway service
+            print(f"Starting gateway on http://{host}:{port} ({profile})...", flush=True)
+            gw_cmd = [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "gateway.main:app",
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--log-level",
+                "info",
+            ]
+            gw_proc = subprocess.Popen(gw_cmd)
+            procs["gateway"] = gw_proc
+
+            _wait_for_service(
+                client,
+                f"{config.gateway_origin}/health/ready",
+                gw_proc,
+                "gateway",
+            )
+            print("Gateway is ready.", flush=True)
+
+            # 3. Start demo server if requested
+            if include_demo:
+                print(f"Starting demo server on http://127.0.0.1:{demo_port}...", flush=True)
+                demo_cmd = [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "demo_server.main:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(demo_port),
+                    "--log-level",
+                    "info",
+                ]
+                demo_proc = subprocess.Popen(demo_cmd)
+                procs["demo_server"] = demo_proc
+
+                _wait_for_service(
+                    client,
+                    f"http://127.0.0.1:{demo_port}/health",
+                    demo_proc,
+                    "demo server",
+                    validator=lambda r: r.json().get("status") == "ok",
+                )
+                print("Demo server is ready.", flush=True)
+
+        demo_line = (
+            f"  - Demo Server: http://127.0.0.1:{demo_port} (ready: /health)\n"
+            if include_demo
+            else ""
+        )
+        print(
+            f"\n======================================================================\n"
+            f"AgentGate Demo Stack Ready ({profile} profile):\n"
+            f"  - Gateway:     {config.gateway_origin} (ready: /health/ready)\n"
+            f"  - Mock Bank:   {config.bank_origin}\n"
+            f"{demo_line}"
+            f"======================================================================\n"
+            "Press Ctrl+C to terminate the stack.\n",
+            flush=True,
+        )
+
+        while True:
+            for name, proc in procs.items():
+                if proc.poll() is not None:
+                    print(
+                        f"Service '{name}' exited unexpectedly with code {proc.returncode}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
+            time.sleep(0.5)
+
+    except KeyboardInterrupt:
+        print("\nStopping AgentGate stack...", flush=True)
     finally:
-        if bank_proc.poll() is None:
-            bank_proc.terminate()
-        bank_proc.wait()
+        for _name, proc in procs.items():
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
 
 
 def main() -> None:
@@ -190,6 +305,10 @@ def main() -> None:
     stack.add_argument("--host", default="127.0.0.1")
     stack.add_argument("--port", type=int, default=8000)
     stack.add_argument("--bank-port", type=int, default=8001)
+    stack.add_argument("--demo-port", type=int, default=8002)
+    stack.add_argument(
+        "--no-demo", action="store_true", help="Do not start demo server on port 8002"
+    )
 
     args = parser.parse_args()
     if args.command == "check-contracts":
@@ -206,6 +325,8 @@ def main() -> None:
             host=args.host,
             port=args.port,
             bank_port=args.bank_port,
+            demo_port=args.demo_port,
+            include_demo=not args.no_demo,
         )
 
 

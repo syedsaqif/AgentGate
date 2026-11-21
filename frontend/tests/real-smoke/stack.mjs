@@ -34,8 +34,11 @@ export async function disposableStack() {
   const gatewayPort = await localPort();
   let bankPort = await localPort();
   while (bankPort === gatewayPort) bankPort = await localPort();
+  let demoPort = await localPort();
+  while ([gatewayPort, bankPort].includes(demoPort)) demoPort = await localPort();
   const gateway = `http://127.0.0.1:${gatewayPort}`;
   const bank = `http://127.0.0.1:${bankPort}`;
+  const demo = `http://127.0.0.1:${demoPort}`;
   const opsId = "ops_admin";
   const opsPassword = randomBytes(24).toString("hex");
   const reference = `d06-${randomBytes(16).toString("hex")}`;
@@ -93,6 +96,8 @@ export async function disposableStack() {
   }
   return {
     gateway,
+    bankOrigin: bank,
+    demo,
     opsId,
     opsPassword,
     customerPin,
@@ -121,6 +126,7 @@ export async function disposableStack() {
       await exec(python, [...publish, "--output", earlier, "--through-sequence", "1"], options);
       await exec(python, [...publish, "--output", checkpoint], options);
       return { dir: separateWitness, earlier: JSON.parse(await readFile(earlier, "utf8")),
+        checkpoint: JSON.parse(await readFile(checkpoint, "utf8")),
         secret: await readFile(witnessKey), trust: await readFile(trust) };
     },
     async verifierTls() {
@@ -135,18 +141,23 @@ export async function disposableStack() {
       return response.json();
     },
     ready: () => launch(["tools.dev", "stack", "--profile", "real", "--port", String(gatewayPort),
-      "--bank-port", String(bankPort)], gateway + "/health/ready"),
+      "--bank-port", String(bankPort), "--no-demo"], gateway + "/health/ready"),
+    startDemo(origin, verifierUrl) {
+      env.DEMO_FRONTEND_ORIGINS = origin;
+      env.AGENTGATE_DISPUTE_VERIFIER_URL = verifierUrl;
+      return launch(["uvicorn", "demo_server.main:app", "--host", "127.0.0.1", "--port", String(demoPort)], demo + "/health");
+    },
     async checkSdk() {
       const { stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--help"], { ...options, timeout: 10000 });
       requireResult(["--key", "--mandate-id", "--amount-paise"].every((flag) => stdout.includes(flag)),
         "checkout does not provide B's signed pay-bill command");
     },
-    async pay(mandateId) {
+    async pay(mandateId, amount = 480000) {
       let stdout;
       try {
         ({ stdout } = await exec(python, ["-m", "agent_sdk.cli", "pay-bill", "--gateway-url", gateway,
           "--agent-id", "agt_billpal", "--mandate-id", mandateId, "--key", billpalKey, "--from-account", "ACC-001",
-          "--payee-id", "BILL-ELEC", "--amount-paise", "480000", "--task", "Pay electricity bill",
+          "--payee-id", "BILL-ELEC", "--amount-paise", String(amount), "--task", "Pay electricity bill",
           "--category", "utilities.electricity", "--reference", reference,
           "--idempotency-key", `d06-${randomBytes(16).toString("hex")}`],
         { ...options, timeout: 30000 }));
@@ -155,7 +166,8 @@ export async function disposableStack() {
       }
       requireResult(stdout.trim(), "B SDK pay-bill produced no result");
       const result = JSON.parse(stdout);
-      requireResult(result.status === "PENDING_APPROVAL" && result.decision === "ESCALATE", "signed payment did not return pending approval");
+      requireResult(amount === 480000 ? result.status === "PENDING_APPROVAL" && result.decision === "ESCALATE"
+        : result.status === "EXECUTED", "signed payment did not reach the expected state");
       return result;
     },
     bankSnapshot(bankOutcome) {

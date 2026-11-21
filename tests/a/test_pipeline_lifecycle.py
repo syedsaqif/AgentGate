@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,7 +11,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from contracts.common import ActionType, FinalDecision, RiskLevel
+from contracts.common import ActionType, FinalDecision, HumanRole, RiskLevel
 from contracts.core_models import (
     Grant,
     MandateSnapshot,
@@ -19,8 +21,9 @@ from contracts.core_models import (
 )
 from contracts.identity_models import AgentStatus, AuthContext
 from contracts.reason_codes import ReasonCode
-from contracts.risk_models import RiskResult
+from contracts.risk_models import RiskResult, RiskSignal
 from gateway.events.bus import EventBus
+from gateway.events.sse import format_event_frame
 from gateway.executor.service import ExecutionService
 from gateway.main import create_app
 from gateway.mandates.schema import MandateTable
@@ -199,6 +202,7 @@ async def pipeline_test_env(tmp_path: Path):
         mandate_reader=deps.mandate_reader,
         clock=deps.clock,
         session_factory=app.state.session_factory,
+        event_bus=event_bus,
     )
     deps.execution_service = exec_srv
     deps.execution_port = exec_srv
@@ -267,9 +271,13 @@ async def test_happy_path_bill_payment_allow(pipeline_test_env) -> None:
         assert len(bank.calls) == 1
 
         decision = queue.get_nowait()
+        while decision.event_type == "gate.step":
+            decision = queue.get_nowait()
         assert decision.event_type == "policy.decision"
         assert decision.data["decision"] == "ALLOW"
         event = queue.get_nowait()
+        while event.event_type == "gate.step":
+            event = queue.get_nowait()
         assert event.event_type == "bank.executed"
         assert event.data["status"] == "EXECUTED"
         assert event.data["customer_id"] == "cust_001"
@@ -586,3 +594,147 @@ async def test_reinstate_agent_does_not_revive_tokens(pipeline_test_env) -> None
 
     # Revoked tokens list is NOT cleared (old tokens stay dead)
     assert "agt_billpal" in tokens.revoked_agents
+
+
+@pytest.mark.parametrize(
+    ("amount", "http", "verdict"),
+    [
+        (10000, 200, "ALLOW"),
+        (350000, 202, "ESCALATE"),
+        (500001, 403, "DENY"),
+    ],
+)
+async def test_money_trace(pipeline_test_env, amount, http, verdict):
+    env = pipeline_test_env
+    env["risk"].result = env["risk"].result.model_copy(update={"signals": (
+        RiskSignal(name="amount_outlier", severity=41, weight=0.5, reason_code="private-reason",
+                   message="private-risk-message"),
+    )})
+    body = make_payment_body(amount_paise=amount, note="private-note")
+    headers = {
+        "Idempotency-Key": "private-key",
+        "Authorization": "private-token",
+        "DPoP": "private-proof",
+    }
+    async with AsyncClient(transport=ASGITransport(app=env["app"]), base_url="http://gw") as client:
+        response = await client.post("/v1/payments/bills", json=body, headers=headers)
+    assert response.status_code == http
+    steps = [e for e in env["event_bus"].get_since(0) if e.event_type == "gate.step"]
+    assert {e.request_id for e in steps} == {response.headers["x-request-id"]}
+    assert [e.data["seq"] for e in steps] == list(range(1, len(steps) + 1))
+    assert all(datetime.fromisoformat(e.data["at"]) <= e.timestamp for e in steps)
+    for item in steps:
+        assert (
+            format_event_frame(
+                replace(item, data={**item.data, "customer_id": "cust_001"}),
+                HumanRole.CUSTOMER,
+                "cust_001",
+            )
+            is None
+        )
+        wire = format_event_frame(item, HumanRole.OPS)
+        assert wire and all(
+            s not in wire
+            for s in [
+                *headers.values(),
+                body["intent"]["note"],
+                body["reference"],
+                "sig_test_dummy",
+            ]
+        )
+    checks = {e.data["check"]: e.data for e in steps}
+    assert checks["amount_outlier"]["detail"] == {"severity": 41, "weight": 0.5}
+    assert "private-risk" not in json.dumps([e.data for e in steps])
+    assert checks["final_decision"]["detail"]["verdict"] == verdict
+    assert checks["per_txn_cap"]["status"] == ("fail" if verdict == "DENY" else "pass")
+    assert (
+        checks["score"]["seq"] < checks["recommendation"]["seq"] < checks["final_decision"]["seq"]
+    )
+    if verdict == "ALLOW":
+        assert (
+            checks["reservation_and_dispatch_audit_committed"]["seq"]
+            < checks["bank_response"]["seq"]
+        )
+        assert checks["bank_response"]["seq"] < checks["outcome"]["seq"]
+    elif verdict == "ESCALATE":
+        assert steps[-1].data["check"] == "awaiting_approval"
+    else:
+        assert steps[-1].data["stage"] == "execution" and steps[-1].data["status"] == "skip"
+
+
+async def test_identity_trace_stops_at_aggregate(pipeline_test_env):
+    env = pipeline_test_env
+    env["deps"].identity_verifier.error = RuntimeError("private-verifier-error")
+    async with AsyncClient(transport=ASGITransport(app=env["app"]), base_url="http://gw") as client:
+        response = await client.post(
+            "/v1/transfers", json=make_payment_body(), headers={"Idempotency-Key": "private-key"}
+        )
+    assert response.status_code == 401
+    rows = [e.data for e in env["event_bus"].get_since(0) if e.event_type == "gate.step"]
+    assert [r["status"] for r in rows[:3]] == ["pass", "pass", "fail"]
+    assert rows[2]["detail"] == {"reason_code": "E_AUTH_PROOF_INVALID"}
+    assert all(row["status"] == "skip" for row in rows[3:])
+    assert "private" not in json.dumps(rows)
+
+
+async def test_trace_failure_and_replay_debit_once(pipeline_test_env, monkeypatch):
+    env = pipeline_test_env
+    bus = env["event_bus"]
+    publish = bus.publish
+
+    async def unavailable(event_type, data):
+        if event_type == "gate.step":
+            raise RuntimeError("trace unavailable")
+        return await publish(event_type, data)
+
+    async with AsyncClient(transport=ASGITransport(app=env["app"]), base_url="http://gw") as client:
+        headers = {"Idempotency-Key": "same-key"}
+        with monkeypatch.context() as patch:
+            patch.setattr(bus, "publish", unavailable)
+            first = await client.post(
+                "/v1/payments/bills", json=make_payment_body(), headers=headers
+            )
+        replay = await client.post("/v1/payments/bills", json=make_payment_body(), headers=headers)
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["request_id"] == replay.json()["request_id"]
+    assert len(env["bank"].calls) == 1
+    rows = [e.data for e in bus.get_since(0) if e.event_type == "gate.step"]
+    assert any(r["check"] == "stored_result" for r in rows)
+    assert rows[-1]["status"] == "skip"
+
+
+async def test_dispatch_rollback_has_no_commit_trace(pipeline_test_env, monkeypatch):
+    env = pipeline_test_env
+    append = env["audit"].append
+
+    async def fail_dispatch(event, tx=None):
+        if event.event_type == "action.dispatched":
+            raise RuntimeError("private-audit-error")
+        return await append(event, tx=tx)
+
+    monkeypatch.setattr(env["audit"], "append", fail_dispatch)
+    transport = ASGITransport(app=env["app"], raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://gw") as client:
+        response = await client.post(
+            "/v1/payments/bills",
+            json=make_payment_body(),
+            headers={"Idempotency-Key": "rollback-key"},
+        )
+    assert response.status_code >= 500
+    assert not env["bank"].calls
+    rows = [e.data for e in env["event_bus"].get_since(0) if e.event_type == "gate.step"]
+    assert rows[-1]["stage"] == "execution" and rows[-1]["status"] == "fail"
+    assert all(r["check"] != "reservation_and_dispatch_audit_committed" for r in rows)
+
+
+async def test_suspension_notification_once_and_scoped(pipeline_test_env):
+    env = pipeline_test_env
+    lifecycle = env["deps"].lifecycle
+    await lifecycle.suspend_agent("agt_billpal")
+    await lifecycle.suspend_agent("agt_billpal")
+    notifications = [e for e in env["event_bus"].get_since(0) if e.event_type == "agent.suspended"]
+    assert len(notifications) == 1
+    (event,) = notifications
+    assert format_event_frame(event, HumanRole.CUSTOMER, "cust_other") is None
+    frame = format_event_frame(event, HumanRole.CUSTOMER, "cust_001")
+    assert frame and "SUSPENDED" in frame and "audit_ref" not in frame

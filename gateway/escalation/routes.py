@@ -18,6 +18,8 @@ from contracts.identity_ports import HumanAuth
 from contracts.reason_codes import HTTP_STATUS_BY_CODE, ReasonCode
 from gateway.errors import AgentGateError
 from gateway.escalation.service import PersistentEscalationService
+from gateway.events.bus import EventBus
+from gateway.events.trace import GateTrace
 
 
 class DecisionRequest(BaseModel):
@@ -88,6 +90,7 @@ def create_escalation_router(
     execution_port: ExecutionPort | None = None,
     audit_log: AuditLog | None = None,
     unit_of_work: Any = None,
+    event_bus: EventBus | None = None,
 ) -> APIRouter:
     """Create FastAPI APIRouter for Member C escalation endpoints."""
     router = APIRouter()
@@ -226,9 +229,13 @@ def create_escalation_router(
                 status_code=status.HTTP_404_NOT_FOUND,
             ) from None
 
+        trace = GateTrace(event_bus, str(esc.request_id))
+        trace.enter("approval", "customer_decision")
         # PIN handling: required for APPROVE
         if body.decision == EscalationDecision.APPROVE:
             if not body.pin:
+                trace.row('fail', reason_code='E_ESC_BAD_PIN')
+                await trace.flush()
                 raise AgentGateError(
                     code=ReasonCode.E_ESC_BAD_PIN,
                     message="Customer PIN required for approval",
@@ -237,6 +244,8 @@ def create_escalation_router(
             try:
                 await human_auth.verify_pin(customer_id, body.pin)
             except Exception:
+                trace.row("fail", reason_code="E_ESC_BAD_PIN")
+                await trace.flush()
                 # Wrong PIN: escalation stays PENDING, audited, 403 E_ESC_BAD_PIN
                 if audit_log is not None:
                     event = AuditEvent(
@@ -277,12 +286,16 @@ def create_escalation_router(
             else:
                 updated_esc = await decide(None)
         except KeyError:
+            trace.row('fail')
+            await trace.flush()
             raise AgentGateError(
                 code=ReasonCode.E_REQ_INVALID,
                 message=f"Escalation {id} not found",
                 status_code=status.HTTP_404_NOT_FOUND,
             ) from None
         except ValueError as e:
+            trace.failure(e)
+            await trace.flush()
             code_str = str(e)
             http_status = (
                 HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_409_CONFLICT)
@@ -295,6 +308,13 @@ def create_escalation_router(
                 status_code=http_status,
             ) from e
 
+        except Exception as exc:
+            trace.failure(exc)
+            await trace.flush()
+            raise
+
+        trace.row("pass", decision=body.decision.value)
+        await trace.flush()
         # If approved and execution port available, hand off execution
         if (
             body.decision == EscalationDecision.APPROVE
@@ -307,6 +327,9 @@ def create_escalation_router(
                     execution_port=execution_port,
                 )
             except ValueError as e:
+                trace.enter('execution', 'execute_approved')
+                trace.failure(e)
+                await trace.flush()
                 code_str = str(e)
                 http_status = (
                     HTTP_STATUS_BY_CODE.get(ReasonCode(code_str), status.HTTP_409_CONFLICT)
@@ -319,6 +342,15 @@ def create_escalation_router(
                     status_code=http_status,
                 ) from e
 
+            except Exception as exc:
+                trace.enter("execution", "execute_approved")
+                trace.failure(exc)
+                await trace.flush()
+                raise
+
+            trace.enter("execution", "outcome")
+            trace.row("info", outcome=str(exec_res.status))
+            await trace.flush()
             updated_esc = await service.get_owned(id, customer_id)
             return {
                 "escalation_id": id,

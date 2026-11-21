@@ -31,6 +31,7 @@ export type GrantInput = {
   max_per_txn_paise?: number;
   max_total_paise?: number;
   max_count: number;
+  category?: string;
   window: "mandate";
   time_window?: TimeWindow;
 };

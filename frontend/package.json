@@ -14,7 +14,9 @@
     "api:generate": "node scripts/generate-api.mjs",
     "api:check": "node scripts/generate-api.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
-    "smoke:real": "node tests/real-smoke/run.mjs",
+    "smoke:real": "node tests/real-smoke/run.mjs && node tests/real-smoke/stage.mjs",
+    "smoke:stage": "node tests/real-smoke/stage.mjs",
+    "capture:stage": "node tests/real-smoke/capture-stage.mjs",
     "test": "vitest",
     "build": "tsc -b && vite build"
   },

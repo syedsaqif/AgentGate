@@ -2,6 +2,8 @@
 
 **Export Court-Ready Proof** in Ops Audit downloads a ZIP with a printable QR receipt, proof JSON and the standalone verifier HTML. The existing evidence JSON download is also available. The verifier checks cryptographic integrity and external witness coverage.
 
+**Download QR code** in Ops Audit and Demo Bank opens a receipt dialog with the audit sequence, hash and witness coverage. Save the 512 px PNG, copy the verifier link or print the dialog. The ZIP retains its 360 px receipt QR. Both sizes encode the static verifier URL. Transfer `proof.json` separately from Ops when the recipient needs payment evidence.
+
 ## Publish a verifier release
 
 Serve `frontend/verifier/dispute-verifier-v1.html` unchanged as `text/html` from an independent HTTPS static host. Use an immutable versioned URL such as `https://verifier.example.org/agentgate/v1/dispute-verifier-v1.html`. Give the recipient the release URL and the SHA-256 of the HTML through a channel they already trust. `Get-FileHash .\frontend\verifier\dispute-verifier-v1.html -Algorithm SHA256` prints the release hash in PowerShell. The verifier needs a browser with Ed25519 WebCrypto and a secure context.
@@ -60,6 +62,7 @@ In another terminal, set `$verifierReleaseUrl` to the trusted, independently hos
 npm ci
 $env:VITE_GATEWAY_ORIGIN = 'http://127.0.0.1:8000'
 $env:VITE_DISPUTE_VERIFIER_URL = $verifierReleaseUrl
+$env:AGENTGATE_DISPUTE_VERIFIER_URL = $verifierReleaseUrl
 npm run dev:real -- --strictPort
 ```
 

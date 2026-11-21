@@ -39,7 +39,7 @@ export function readMandateDraft(
     return fail("Enter a positive whole number for the count limit.");
   }
 
-  let moneyTerms: Pick<GrantInput, "payee_ids" | "currency" | "max_per_txn_paise" | "max_total_paise"> = {};
+  let moneyTerms: Pick<GrantInput, "payee_ids" | "currency" | "max_per_txn_paise" | "max_total_paise" | "category"> = {};
   const hasMoneyAction = actions.some(isMoneyAction);
   if (hasMoneyAction) {
     const payees = bootstrap.payees.filter(({ payee_id }) => fields.getAll("payee").includes(payee_id));
@@ -49,9 +49,11 @@ export function readMandateDraft(
     const lifetime = parseMandateCapPaise(String(fields.get("lifetime") ?? ""));
     if (!lifetime.ok) return fail(`Mandate-lifetime cap. ${lifetime.error}`);
     if (perTxn.value > lifetime.value) return fail("The per-transaction cap must fit within the lifetime cap.");
+    const category = String(fields.get("category") ?? "").trim();
     moneyTerms = {
       payee_ids: payees.map(({ payee_id }) => payee_id), currency: "INR",
       max_per_txn_paise: perTxn.value, max_total_paise: lifetime.value,
+      ...(category ? { category } : {}),
     };
   }
 

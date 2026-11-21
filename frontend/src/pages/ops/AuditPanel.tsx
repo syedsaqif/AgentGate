@@ -125,7 +125,9 @@ export function AuditPanel({ api, token, endSession }: AuditProps) {
             <>
               <EvidenceDetails key={`evidence-${selected}`} evidence={evidence.state.data} />
               <DisputeExport key={`dispute-${selected}`} api={api} token={token}
-                endSession={endSession} requestId={selected} />
+                endSession={endSession} requestId={selected}
+                executed={evidence.state.data.bundle.bank_outcome?.status === "EXECUTED"
+                  && new Set<unknown>(["bill_pay", "transfer"]).has(evidence.state.data.bundle.action?.action_type)} />
             </>
           )}
         </section>

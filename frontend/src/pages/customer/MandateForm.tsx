@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import { isMoneyAction, mandateActions, type MandateAction, type MandateTermsInput } from "../../api/mandateWire";
 import type { CustomerBootstrap } from "../../api/shellWire";
+import { readAndClearPin } from "../../components/pin";
 import { formatInrPaise, formatKolkataTimestamp } from "../../formatting";
 import { actionLabels, maskedAccount, readMandateDraft, weekdays } from "./mandateDraft";
 
@@ -31,8 +32,7 @@ export function MandateForm({ bootstrap, disabled, create }: MandateFormProps) {
   async function confirm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!preview || disabled || confirming.current) return;
-    const pin = String(new FormData(event.currentTarget).get("pin") ?? "");
-    event.currentTarget.reset();
+    const pin = readAndClearPin(event.currentTarget);
     if (!pin.trim()) {
       setValidation("Enter your Customer PIN.");
       return;

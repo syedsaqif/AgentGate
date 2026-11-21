@@ -1,0 +1,25 @@
+.qr-dialog {
+  box-sizing: border-box;
+  width: min(46rem, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  padding: 1.25rem;
+  border: 1px solid #9fb8ab;
+  border-radius: 0.8rem;
+  color: #172720;
+  background: #fff;
+}
+.qr-dialog::backdrop { background: #0b1e1ab5; }
+.qr-dialog .qr-content { overflow-wrap: anywhere; }
+.qr-dialog .qr-tile { width: min(100%, 18rem); background: white; margin: auto; }
+.qr-dialog .qr-placeholder { aspect-ratio: 1; background: #f4f8f6; border: 1px solid #dce8e0; }
+.qr-dialog img { display: block; width: 100%; height: auto; }
+.qr-dialog dt { font-weight: 700; }
+.qr-dialog dd { margin: 0 0 0.4rem; }
+.qr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.qr-actions a { color: #174b39; font-weight: 700; padding: 0.4rem 0.5rem; }
+@media print {
+  body:has(> .qr-dialog[open]) > :not(.qr-dialog[open]) { display: none !important; }
+  body .qr-dialog[open] { position: static; margin: 0; border: 0; width: 100%; max-height: none; overflow: visible; }
+  body .qr-dialog[open] .qr-actions, body .qr-dialog[open] .qr-feedback { display: none; }
+  .qr-dialog::backdrop { display: none; }
+}

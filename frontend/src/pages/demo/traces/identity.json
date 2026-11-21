@@ -1,0 +1,16 @@
+{
+  "events": [
+    {"event_id":"1","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"edge","check":"idempotency_key","status":"pass","seq":1,"detail":{}}},
+    {"event_id":"2","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"edge","check":"request_body","status":"pass","seq":2,"detail":{}}},
+    {"event_id":"3","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"identity","check":"authenticate_agent","status":"fail","seq":3,"detail":{"reason_code":"E_AUTH_PROOF_INVALID"}}},
+    {"event_id":"4","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"registry","check":"not_reached","status":"skip","seq":4,"detail":{}}},
+    {"event_id":"5","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"canonical","check":"not_reached","status":"skip","seq":5,"detail":{}}},
+    {"event_id":"6","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"idempotency","check":"not_reached","status":"skip","seq":6,"detail":{}}},
+    {"event_id":"7","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"mandate","check":"not_reached","status":"skip","seq":7,"detail":{}}},
+    {"event_id":"8","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"policy","check":"not_reached","status":"skip","seq":8,"detail":{}}},
+    {"event_id":"9","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"risk","check":"not_reached","status":"skip","seq":9,"detail":{}}},
+    {"event_id":"10","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"breaker","check":"not_reached","status":"skip","seq":10,"detail":{}}},
+    {"event_id":"11","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"decision","check":"not_reached","status":"skip","seq":11,"detail":{}}},
+    {"event_id":"12","event_type":"gate.step","request_id":"req_identity_fixture","data":{"stage":"execution","check":"not_reached","status":"skip","seq":12,"detail":{}}}
+  ]
+}

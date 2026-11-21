@@ -335,6 +335,7 @@ def create_app(
         from gateway.escalation.routes import create_escalation_router
 
         escalation_router = create_escalation_router(
+            event_bus=deps.event_bus,
             service=deps.escalation_service,
             human_auth=deps.human_auth,
             lifecycle=deps.lifecycle,
