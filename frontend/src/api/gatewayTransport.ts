@@ -2,6 +2,7 @@ import { ApiError } from "./errors";
 import type { ApiTransport } from "./types";
 
 function gatewayOrigin(configuredOrigin: string | undefined): string {
+  if (configuredOrigin === "/") return window.location.origin;
   try {
     const url = new URL(configuredOrigin ?? "");
     if (["http:", "https:"].includes(url.protocol)

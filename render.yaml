@@ -8,6 +8,12 @@ services:
     healthCheckPath: /health/ready
     dockerfilePath: Dockerfile
     envVars:
+      - key: PRESENTER_PASSWORD
+        generateValue: true
+      - key: D06_OPS_PASSWORD
+        generateValue: true
+      - key: D06_CUSTOMER_PIN
+        sync: false
       - key: AGENTGATE_PROFILE
         value: real
       - key: AGENTGATE_BANK_SERVICE_CREDENTIAL

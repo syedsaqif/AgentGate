@@ -55,8 +55,9 @@ export async function startRun(payload: StartInput, signal: AbortSignal) {
 export async function softReset(signal: AbortSignal) {
   const value = await (await request("/reset", signal, {})).json();
   const count = Array.isArray(value.revoked_mandates) ? value.revoked_mandates.length : 0;
-  return `${value.created_mandate_id ? "Fresh demo mandate created." : "Could not create a fresh demo mandate."} `
+  const message = `${value.created_mandate_id ? "Fresh demo mandate created." : "Could not create a fresh demo mandate."} `
     + `${count} mandates revoked. ${value.reinstated_agent ? "BillPal reinstated." : "Reinstatement was not confirmed."}`;
+  return { message, ready: value.reinstated_agent === "agt_billpal" && Boolean(value.created_mandate_id) };
 }
 
 export function decodeStep(frame: SseFrame): Step | undefined {

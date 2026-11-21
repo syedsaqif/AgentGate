@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 
 from agent_sdk.client import AgentGateClient
 from agent_sdk.keys import AgentKeyPair, generate_agent_keypair, load_private_key_pem
@@ -143,18 +144,15 @@ class AgentBrain:
         """Resolve active mandate ID for BillPal from Gateway, or prepare default demo mandate."""
         # 1. Login as customer to list mandates
         pin = self.config.customer_pin or "4821"
-        try:
-            login_data = await self.gateway_client.customer_login(self.config.customer_id, pin)
-            token = login_data["token"]
-            mandates = await self.gateway_client.list_customer_mandates(token, limit=20)
-            for item in mandates.get("items", []):
-                if (
-                    item.get("status") == "ACTIVE"
-                    and item.get("terms", {}).get("agent_id") == "agt_billpal"
-                ):
-                    return item["terms"]["mandate_id"]
-        except Exception:
-            pass
+        login_data = await self.gateway_client.customer_login(self.config.customer_id, pin)
+        token = login_data["token"]
+        mandates = await self.gateway_client.list_customer_mandates(token, limit=20)
+        for item in mandates.get("items", []):
+            if (
+                item.get("status") == "ACTIVE"
+                and item.get("terms", {}).get("agent_id") == "agt_billpal"
+            ):
+                return item["terms"]["mandate_id"]
 
         # 2. If no active mandate, create the exact default mandate from §10A.3
         now = datetime.now(UTC)
@@ -435,7 +433,18 @@ class AgentBrain:
                     record.append_event({"step": "completed", "verdict": "REFUSED"})
                     return
             else:
-                mandate_id = await self._resolve_active_mandate()
+                try:
+                    mandate_id = await self._resolve_active_mandate()
+                except HTTPException:
+                    record.status, record.verdict = "failed", "ERROR"
+                    record.append_event({
+                        "step": "error", "reason_code": "DEMO_MANDATE_SETUP_FAILED",
+                    })
+                    record.append_event({
+                        "step": "completed", "verdict": "ERROR",
+                        "reason_code": "DEMO_MANDATE_SETUP_FAILED",
+                    })
+                    return
 
             # Handle L2 (Budget drain: 3 sequential calls of ₹4,000)
             if scenario and scenario.id.upper() in ("L2",):

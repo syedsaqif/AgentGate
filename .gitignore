@@ -38,6 +38,9 @@ frontend/coverage/
 runtime/
 checkpoints/
 recordings/
+!frontend/src/pages/demo/stage/recordings/
+frontend/src/pages/demo/stage/recordings/*
+!frontend/src/pages/demo/stage/recordings/*.json
 artifacts/
 
 # Editors and operating systems

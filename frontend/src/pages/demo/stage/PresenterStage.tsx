@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Playback } from "../DemoGatePage";
+import { buildPlayback, projectGate } from "../gateTimeline";
+import { formatInrPaise } from "../../../formatting";
 import { useGateStream } from "../useGateStream";
-import { AgentResult } from "../agent/agentResult";
+import { AgentResult, summarize } from "../agent/agentResult";
 import { Fixture } from "../agent/TestLab";
 import { isFixture, readCatalogue, softReset, startRun, streamRun, type Scenario, type Step } from "../agent/agentApi";
 import DemoBankPage from "../bank/DemoBankPage";
@@ -82,43 +84,46 @@ function RecordedBank({frame}: {frame?: ReturnType<typeof replayFrames>[number]}
 function CompareRunSummary({ capture }: { capture?: Capture }) {
   if (!capture) return <p>No recording available.</p>;
   const { card } = capture;
-  const lastPhase = capture.phases?.at(-1);
-  const startBal = capture.opening?.overview
-    ? (capture.opening.overview as { balance_paise?: number }).balance_paise
-    : undefined;
-  const endBal = lastPhase?.overview
-    ? (lastPhase.overview as { balance_paise?: number }).balance_paise
-    : undefined;
-  const delta = startBal !== undefined && endBal !== undefined ? endBal - startBal : 0;
-  const isSuspended = ["I1", "I2", "I4", "L5"].includes(card.id);
+  const frames = replayFrames(capture);
+  const last = frames.at(-1);
+  const result = summarize(last?.steps ?? []);
+  const beats = last?.request && buildPlayback(last.request);
+  const gate = last?.request && beats && projectGate(last.request, beats, beats.length);
+  const start = frames[0]?.bank?.balance;
+  const end = capture.phases?.length ? last?.bank?.balance : undefined;
+  const delta = start !== undefined && end !== undefined ? end - start : undefined;
+  const agentStatus = result.end?.agentStatus;
+  const verdict = result.verdict ?? gate?.decision;
+  const reason = result.reason ?? gate?.reason;
 
   return (
     <div className="compare-details">
       <h3>{card.title} ({card.id})</h3>
       <p className="compare-prompt">&ldquo;{card.prompt}&rdquo;</p>
       <dl className="compare-dl">
-        <dt>Verdict</dt>
+        <dt>{verdict ? "Recorded verdict" : "Expected verdict"}</dt>
         <dd>
-          <strong className={`gate-verdict-badge verdict-${card.expected_verdict.toLowerCase()}`}>
-            {card.expected_verdict}
+          <strong className={`gate-verdict-badge verdict-${(verdict ?? card.expected_verdict).toLowerCase()}`}>
+            {verdict ?? card.expected_verdict}
           </strong>
         </dd>
-        <dt>Stop Point</dt>
+        <dt>Expected stop point</dt>
         <dd>{card.expected_stop_point}</dd>
         <dt>Risk Score</dt>
-        <dd>{card.expected_risk_score ?? "0"} / 100 ({card.expected_risk_band ?? "LOW"})</dd>
+        <dd>{gate?.risk ? `${gate.risk.score} / 100${gate.risk.band ? ` (${gate.risk.band})` : ""}` : "Not recorded"}</dd>
         <dt>Money Moved</dt>
-        <dd>{delta !== 0 ? `₹${Math.abs(delta) / 100} debited` : "₹0 moved"}</dd>
+        <dd>{delta === undefined ? "Not recorded" : delta === 0 ? "₹0 moved" :
+          `${formatInrPaise(Math.abs(delta))} ${delta < 0 ? "debited" : "credited"}`}</dd>
         <dt>BillPal Status</dt>
         <dd>
-          <span className={isSuspended ? "badge-suspended" : "badge-active"}>
-            {isSuspended ? "SUSPENDED" : "ACTIVE"}
+          <span className={agentStatus === "SUSPENDED" ? "badge-suspended" : agentStatus === "ACTIVE" ? "badge-active" : undefined}>
+            {agentStatus ?? "Not recorded"}
           </span>
         </dd>
-        {card.expected_reason_code && (
+        {(reason || card.expected_reason_code) && (
           <>
-            <dt>Reason Code</dt>
-            <dd><code>{card.expected_reason_code}</code></dd>
+            <dt>{reason ? "Recorded reason code" : "Expected reason code"}</dt>
+            <dd><code>{reason ?? card.expected_reason_code}</code></dd>
           </>
         )}
       </dl>
@@ -162,6 +167,8 @@ export default function PresenterStage() {
   const steps = live ? history.steps : frame?.steps ?? [];
   const ids = [...new Set(steps.flatMap(s => s.traceRequestId ? [s.traceRequestId] : s.requestId ? [s.requestId] : []))];
   const request = live ? feed.requests.get(requestChoice || ids.at(-1) || "") : frame?.request;
+  const outcome = summarize(steps);
+  const suspendedP5 = live && run?.key === "P5" && !!outcome.end && outcome.reason === "E_AUTH_AGENT_SUSPENDED";
   const waiting = live && !!run && !steps.some(s=>s.name === "completed") && !history.status.startsWith("Run history expired");
   const options = recorded ? Object.entries(archive).map(([key, value]) => ({key, card: value.card}))
     : catalogue.map(card => ({key: card.id, card}));
@@ -232,7 +239,7 @@ export default function PresenterStage() {
       action.current = null; setBusy(false);
     }
   }
-  async function reset() {
+  async function reset(retryP5 = false) {
     if (action.current || waiting) return;
     if (recorded || fixture) { clear(); url(mode, selected); return; }
     const controller = new AbortController();
@@ -240,7 +247,25 @@ export default function PresenterStage() {
     setBusy(true);
     try {
       const report = await softReset(controller.signal);
-      clear(); setEpoch(n=>n+1); setMessage(report); url(mode, selected);
+      if (controller.signal.aborted) return;
+      setEpoch(n=>n+1);
+      setMessage(report.message);
+      if (retryP5 && !report.ready) return;
+      clear();
+      setMessage(report.message);
+      url(mode, selected);
+      if (retryP5) {
+        try {
+          const id = await startRun({scenario_id: "P5"}, controller.signal);
+          if (!controller.signal.aborted) {
+            setRun({key: "P5", id});
+            url(mode, "P5", id);
+            setMessage("Sign in to Demo Bank to review the new approval.");
+          }
+        } catch {
+          setMessage("Reset completed, but the new run could not be confirmed. Check the bank before retrying.");
+        }
+      }
     } catch { setMessage("Soft reset could not be confirmed."); }
     finally { action.current = null; setBusy(false); }
   }
@@ -254,7 +279,8 @@ export default function PresenterStage() {
       <label className="stage-picker">Scenario<select aria-label="Scenario" value={selected} disabled={busy || (recorded && options.length === 0)}
         onChange={event => setSelected(event.target.value)}>
         {options.length === 0 && (
-          <option value="" disabled>No recordings found — switch to Live</option>
+          <option value="" disabled>{recorded ? "No recordings found — switch to Live" :
+            catalogueError ? "Scenario catalogue unavailable" : "Loading scenarios…"}</option>
         )}
         {SCENARIO_GROUPS.map(({ id: grpId, label }) => {
           const items = groupedOptions.get(grpId);
@@ -322,7 +348,18 @@ export default function PresenterStage() {
         {fixture ? <div className="gate-panel"><h2>Fixture outcome</h2>
           <p>Read-only fixture · {String(fixture.fixture?.reason_code ?? fixture.fixture?.failure_stage ?? "")}</p>
           {fixture.id === "C1" && <p>Identity failed. Agent registry, mandate, policy, risk and bank execution were not reached.</p>}
-        </div> : !request && steps.at(-1)?.name === "completed" && (recorded || !ids.length || steps.at(-1)?.reason?.startsWith("E_AUTH_") || steps.at(-1)?.reason === "E_MANDATE_REVOKED") ? <section className="gate-panel"><h2>No payment trace</h2><p>{steps.at(-1)?.reason ?? "The agent completed without a payment trace."}</p></section> : <Playback key={request?.requestId || "empty"} request={request} recorded={recorded}
+        </div> : suspendedP5 ? <section className="gate-panel">
+          <h2>BillPal was suspended before approval</h2>
+          <p>The agent registry blocked this payment before Demo Bank could create an approval.</p>
+          <p>A soft reset reinstates BillPal, renews the demo mandate and signs the bank out. Your ledger is retained.</p>
+          {selected === "P5" && <button type="button" disabled={busy || waiting} onClick={() => void reset(true)}>Soft reset and rerun P5</button>}
+        </section> : outcome.reason === "DEMO_MANDATE_SETUP_FAILED" ? <section className="gate-panel">
+          <h2>Payment could not start</h2>
+          <p>BillPal could not load or create its demo mandate. Check the gateway connection and demo customer sign-in, then run the scenario again. No payment was submitted.</p>
+        </section> : !request && outcome.verdict === "ERROR" ? <section className="gate-panel">
+          <h2>Payment outcome unavailable</h2>
+          <p>The demo could not confirm this run. Check the gateway connection and bank activity before starting another payment.</p>
+        </section> : !request && steps.at(-1)?.name === "completed" && (recorded || !ids.length || steps.at(-1)?.reason?.startsWith("E_AUTH_") || steps.at(-1)?.reason === "E_MANDATE_REVOKED") ? <section className="gate-panel"><h2>No payment trace</h2><p>{steps.at(-1)?.reason ?? "The agent completed without a payment trace."}</p></section> : <Playback key={request?.requestId || "empty"} request={request} recorded={recorded}
           controls={{speed, skip, position: recorded ? frame?.position ?? 0 : undefined}} />}
         {live && feed.historyGap && <p role="status">The gateway replay buffer has a gap.</p>}
       </section>

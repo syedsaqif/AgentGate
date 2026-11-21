@@ -29,6 +29,13 @@ function renderMock(role: Role, transport = createMockTransport()) {
 }
 
 describe("fixture-backed workspaces", () => {
+  it("offers a route home from an unknown address", () => {
+    window.history.replaceState(null, "", "/missing-page");
+    render(<App mode="mock" api={createShellApi(createMockTransport())} demoIds={demoIds} />);
+    expect(screen.getByRole("heading", { name: "Page not found" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Return to AgentGate home" })).toHaveAttribute("href", "/");
+  });
+
   it.each([
     { ...customer, name: "accepts PIN 4821 and loads bootstrap", id: "cust_001", secret: "4821" },
     { ...ops, name: "signs in and reads the Ops workspace", ...demoCredentials.ops },

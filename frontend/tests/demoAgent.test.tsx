@@ -55,6 +55,17 @@ function mockBackend(stream: (id: string, last: string | null) => string) {
 }
 
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+it("can start a new chat from an invalid run link", async () => {
+  const api = mockBackend(() => "");
+  window.history.replaceState(null, "", "/demo/agent?run_id=invalid");
+  render(<DemoAgentPage />);
+  expect(await screen.findByText(/This run link is invalid/)).toBeVisible();
+  click("New chat");
+  expect(screen.getByRole("heading", { name: "What would you like to pay?" })).toBeVisible();
+  expect(window.location.search).toBe("");
+  expect(api.gets).toHaveLength(0);
+});
+
 async function lab() {
   await waitFor(() => expect(screen.getByRole("button", { name: "Test lab" })).toBeEnabled());
   click("Test lab");

@@ -61,7 +61,11 @@ export default function DemoAgentPage() {
 
   useEffect(() => {
     setConnection("");
-    if (!/^run_[\w-]+$/.test(selected)) return;
+    if (!selected) return;
+    if (!/^run_[\w-]+$/.test(selected)) {
+      setConnection("This run link is invalid. Select a chat from history or start a new chat.");
+      return;
+    }
     let cursor = records.current.find(({ id }) => id === selected)?.steps.at(-1)?.seq ?? 0;
     if (records.current.find(({ id }) => id === selected)?.steps.at(-1)?.name === "completed") return;
     const controller = new AbortController();
@@ -139,7 +143,7 @@ export default function DemoAgentPage() {
     action.current = controller;
     setBusy(true); setError(""); setFeedback("");
     try {
-      const message = await softReset(controller.signal);
+      const { message } = await softReset(controller.signal);
       if (!controller.signal.aborted) setFeedback(message);
     } catch {
       if (!controller.signal.aborted) setError("The demo server did not confirm the reset.");

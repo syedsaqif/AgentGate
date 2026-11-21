@@ -36,6 +36,12 @@ export function App(props: AppProps) {
     return <Suspense fallback={<main>Loading assistant…</main>}><DemoAgentPage /></Suspense>;
   }
   const isOps = path === "/ops";
+  if (!isOps && path !== "/customer") {
+    return <main>
+      <h1>Page not found</h1>
+      <a href="/">Return to AgentGate home</a>
+    </main>;
+  }
   const demoIds = props.mode === "mock" ? props.demoIds : undefined;
   return (
     <main>
