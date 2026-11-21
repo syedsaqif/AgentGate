@@ -1,8 +1,12 @@
 # Stage 1: Build React 19 Frontend SPA
 FROM node:24-alpine AS frontend-builder
-WORKDIR /app/frontend
+WORKDIR /app
 
-COPY frontend/package*.json ./
+# Copy contracts needed by frontend contract schema tests
+COPY contracts/ ./contracts/
+COPY frontend/package*.json ./frontend/
+
+WORKDIR /app/frontend
 RUN npm ci
 
 COPY frontend/ ./
